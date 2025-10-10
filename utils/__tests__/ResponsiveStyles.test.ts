@@ -19,7 +19,7 @@ jest.mock("@/hooks/useResponsiveLayout", () => ({
   useResponsiveLayout: jest.fn(),
 }));
 
-jest.mock("@/utils/DeviceUtils", () => ({
+jest.mock("@/utils/DeviceUtils", () => ({c
   DeviceUtils: {
     getMinTouchTargetSize: jest.fn(),
     getOptimalFontSize: jest.fn(),

@@ -1,8 +1,9 @@
 import React from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { View, Text, StyleSheet, Pressable, PanResponder, GestureResponderEvent, Dimensions } from "react-native";
 import { Pause, Play, SkipForward, List, Tv, ArrowDownToDot, ArrowUpFromDot, Gauge } from "lucide-react-native";
 import { ThemedText } from "@/components/ThemedText";
 import { MediaButton } from "@/components/MediaButton";
+import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 import usePlayerStore from "@/stores/playerStore";
 import useDetailStore from "@/stores/detailStore";
@@ -14,8 +15,8 @@ interface PlayerControlsProps {
 }
 
 export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, setShowControls }) => {
-  const {
-    currentEpisodeIndex,
+  const { deviceType } = useResponsiveLayout();
+  const { currentEpisodeIndex,
     episodes,
     status,
     isSeeking,
@@ -31,6 +32,7 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
     setOutroStartTime,
     introEndTime,
     outroStartTime,
+    videoRef
   } = usePlayerStore();
 
   const { detail } = useDetailStore();
@@ -57,6 +59,57 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
     }
   };
 
+  // 处理进度条点击事件
+  const handleProgressBarPress = (event: GestureResponderEvent) => {
+    if (!status?.isLoaded || !status.durationMillis) return;
+
+    const { locationX } = event.nativeEvent;
+    // 获取屏幕宽度作为参考
+    const screenWidth = Dimensions.get('window').width;
+    // 计算点击位置对应的进度比例
+    const newPositionRatio = Math.min(Math.max(locationX / screenWidth, 0), 1);
+    // 计算新的位置（毫秒）
+    const newPositionMillis = newPositionRatio * status.durationMillis;
+    // 计算需要跳转的毫秒数
+    const seekDuration = newPositionMillis - (status.positionMillis || 0);
+    
+    // 使用playerStore中的seek方法来处理进度调整
+    usePlayerStore.getState().seek(seekDuration);
+  };
+
+  // 处理拖动手势（针对移动设备）
+  const panResponder = PanResponder.create({
+    onStartShouldSetPanResponder: () => status?.isLoaded ?? false,
+    onPanResponderMove: (_, gestureState) => {
+      if (!status?.isLoaded || !status.durationMillis) return;
+      
+      // 获取屏幕宽度作为参考
+      const screenWidth = Dimensions.get('window').width;
+      // 根据手势移动距离计算进度变化
+      const relativeX = Math.min(Math.max(gestureState.moveX / screenWidth, 0), 1);
+      
+      // 只更新UI状态，使用usePlayerStore的setState方法
+      usePlayerStore.setState({
+        isSeeking: true,
+        seekPosition: relativeX
+      });
+    },
+    onPanResponderRelease: (_, gestureState) => {
+      if (!status?.isLoaded || !status.durationMillis) return;
+      
+      // 获取屏幕宽度作为参考
+      const screenWidth = Dimensions.get('window').width;
+      // 根据最终位置计算新的进度
+      const relativeX = Math.min(Math.max(gestureState.moveX / screenWidth, 0), 1);
+      const newPositionMillis = relativeX * status.durationMillis;
+      // 计算需要跳转的毫秒数
+      const seekDuration = newPositionMillis - (status.positionMillis || 0);
+      
+      // 使用playerStore中的seek方法来处理进度调整
+      usePlayerStore.getState().seek(seekDuration);
+    },
+  });
+
   return (
     <View style={styles.controlsOverlay}>
       <View style={styles.topControls}>
@@ -68,17 +121,21 @@ export const PlayerControls: React.FC<PlayerControlsProps> = ({ showControls, se
 
       <View style={styles.bottomControlsContainer}>
         <View style={styles.progressBarContainer}>
-          <View style={styles.progressBarBackground} />
-          <View
-            style={[
-              styles.progressBarFilled,
-              {
-                width: `${(isSeeking ? seekPosition : progressPosition) * 100}%`,
-              },
-            ]}
-          />
-          <Pressable style={styles.progressBarTouchable} />
-        </View>
+        <View style={styles.progressBarBackground} />
+        <View
+          style={[
+            styles.progressBarFilled,
+            {
+              width: `${(isSeeking ? seekPosition : progressPosition) * 100}%`,
+            },
+          ]}
+        />
+        <Pressable
+          style={styles.progressBarTouchable}
+          onPress={handleProgressBarPress}
+          {...panResponder.panHandlers}
+        />
+      </View>
 
         <ThemedText style={{ color: "white", marginTop: 5 }}>
           {status?.isLoaded
