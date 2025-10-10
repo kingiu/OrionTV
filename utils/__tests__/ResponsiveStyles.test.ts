@@ -7,7 +7,6 @@ import {
   getResponsiveSpacing,
   ResponsiveStyleCreator,
 } from "../ResponsiveStyles";
-import { ResponsiveConfig } from "@/hooks/useResponsiveLayout";
 import { DeviceUtils } from "../DeviceUtils";
 
 jest.mock("react-native", () => ({
@@ -31,14 +30,22 @@ const mockedStyleSheet = StyleSheet as jest.Mocked<typeof StyleSheet>;
 const mockedDeviceUtils = DeviceUtils as jest.Mocked<typeof DeviceUtils>;
 
 describe("ResponsiveStyles", () => {
-  const mockConfig: ResponsiveConfig = {
-    deviceType: "mobile",
-    spacing: 16,
-    safeAreaInsets: { top: 0, bottom: 0, left: 0, right: 0 },
+  // 创建完整的模拟配置对象
+  const createMockConfig = (deviceType: 'mobile' | 'tablet' | 'tv', spacing: number = 16) => ({
+    deviceType,
+    spacing,
+    isLandscape: false,
+    isPortrait: true,
     windowWidth: 375,
     windowHeight: 812,
-    isLandscape: false,
-  };
+    screenWidth: 375,
+    screenHeight: 812,
+    columns: deviceType === 'mobile' ? 3 : deviceType === 'tablet' ? 5 : 12,
+    cardWidth: deviceType === 'mobile' ? 120 : deviceType === 'tablet' ? 140 : 160,
+    cardHeight: deviceType === 'mobile' ? 180 : deviceType === 'tablet' ? 200 : 220,
+    minTouchTargetSize: deviceType === 'mobile' ? 44 : deviceType === 'tablet' ? 48 : 60,
+    optimalSpacing: spacing,
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -48,14 +55,14 @@ describe("ResponsiveStyles", () => {
 
   describe("createResponsiveStyles", () => {
     it("应该创建响应式样式函数", () => {
-      const styleCreator: ResponsiveStyleCreator<any> = (config) => ({
+      const styleCreator: ResponsiveStyleCreator<any> = (config: any) => ({
         container: {
           padding: config.spacing,
         },
       });
 
       const responsiveStylesFunc = createResponsiveStyles(styleCreator);
-      const styles = responsiveStylesFunc(mockConfig);
+      const styles = responsiveStylesFunc(createMockConfig('mobile'));
 
       expect(mockedStyleSheet.create).toHaveBeenCalledWith({
         container: {
@@ -84,15 +91,10 @@ describe("ResponsiveStyles", () => {
     });
 
     it("应该为 mobile 设备返回正确的样式", () => {
-      const mobileConfig: ResponsiveConfig = {
-        ...mockConfig,
-        deviceType: "mobile",
-        spacing: 16,
-      };
-
+      const mobileConfig = createMockConfig('mobile', 16);
       mockedDeviceUtils.getMinTouchTargetSize.mockReturnValue(44);
 
-      const styles = getCommonResponsiveStyles(mobileConfig);
+      const styles = getCommonResponsiveStyles(mobileConfig as any);
 
       expect(styles.container).toEqual({
         flex: 1,
@@ -116,15 +118,10 @@ describe("ResponsiveStyles", () => {
     });
 
     it("应该为 tablet 设备返回正确的样式", () => {
-      const tabletConfig: ResponsiveConfig = {
-        ...mockConfig,
-        deviceType: "tablet",
-        spacing: 20,
-      };
-
+      const tabletConfig = createMockConfig('tablet', 20);
       mockedDeviceUtils.getMinTouchTargetSize.mockReturnValue(48);
 
-      const styles = getCommonResponsiveStyles(tabletConfig);
+      const styles = getCommonResponsiveStyles(tabletConfig as any);
 
       expect(styles.safeContainer.paddingTop).toBe(30);
       expect(styles.primaryButton.borderRadius).toBe(10);
@@ -132,15 +129,10 @@ describe("ResponsiveStyles", () => {
     });
 
     it("应该为 tv 设备返回正确的样式", () => {
-      const tvConfig: ResponsiveConfig = {
-        ...mockConfig,
-        deviceType: "tv",
-        spacing: 24,
-      };
-
+      const tvConfig = createMockConfig('tv', 24);
       mockedDeviceUtils.getMinTouchTargetSize.mockReturnValue(60);
 
-      const styles = getCommonResponsiveStyles(tvConfig);
+      const styles = getCommonResponsiveStyles(tvConfig as any);
 
       expect(styles.safeContainer.paddingTop).toBe(40);
       expect(styles.primaryButton.borderRadius).toBe(12);
@@ -148,25 +140,17 @@ describe("ResponsiveStyles", () => {
     });
 
     it("应该为 tv 设备不包含阴影样式", () => {
-      const tvConfig: ResponsiveConfig = {
-        ...mockConfig,
-        deviceType: "tv",
-        spacing: 24,
-      };
+      const tvConfig = createMockConfig('tv', 24);
 
-      const styles = getCommonResponsiveStyles(tvConfig);
+      const styles = getCommonResponsiveStyles(tvConfig as any);
 
       expect(styles.shadow).toEqual({});
     });
 
     it("应该为非 tv 设备包含阴影样式", () => {
-      const mobileConfig: ResponsiveConfig = {
-        ...mockConfig,
-        deviceType: "mobile",
-        spacing: 16,
-      };
+      const mobileConfig = createMockConfig('mobile', 16);
 
-      const styles = getCommonResponsiveStyles(mobileConfig);
+      const styles = getCommonResponsiveStyles(mobileConfig as any);
 
       expect(styles.shadow).toEqual({
         shadowColor: "#000",

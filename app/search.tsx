@@ -23,12 +23,12 @@ import Logger from '@/utils/Logger';
 const logger = Logger.withTag('SearchScreen');
 
 export default function SearchScreen() {
-  const [keyword, setKeyword] = useState("");
-  const [results, setResults] = useState<SearchResult[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [keyword, setKeyword] = useState<string>("");
+  const [results, setResults] = useState<Array<SearchResult>>([]);
+  const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const textInputRef = useRef<TextInput>(null);
-  const [isInputFocused, setIsInputFocused] = useState(false);
+  const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
   const { showModal: showRemoteModal, lastMessage, targetPage, clearMessage } = useRemoteControlStore();
   const { remoteInputEnabled } = useSettingsStore();
   const router = useRouter();
@@ -69,7 +69,41 @@ export default function SearchScreen() {
     try {
       const response = await api.searchVideos(term);
       if (response.results.length > 0) {
-        setResults(response.results);
+        // 对搜索结果进行排序，使与关键词更相关的影视排在前面
+        const sortedResults = [...response.results].sort((a, b) => {
+          const termLower = term.toLowerCase();
+          const titleALower = a.title.toLowerCase();
+          const titleBLower = b.title.toLowerCase();
+          
+          // 1. 完全匹配的排在最前面
+          const aExactMatch = titleALower === termLower;
+          const bExactMatch = titleBLower === termLower;
+          if (aExactMatch && !bExactMatch) return -1;
+          if (!aExactMatch && bExactMatch) return 1;
+          
+          // 2. 标题开头匹配的排在前面
+          const aStartsWith = titleALower.startsWith(termLower);
+          const bStartsWith = titleBLower.startsWith(termLower);
+          if (aStartsWith && !bStartsWith) return -1;
+          if (!aStartsWith && bStartsWith) return 1;
+          
+          // 3. 标题包含关键词的排在前面
+          const aIncludes = titleALower.includes(termLower);
+          const bIncludes = titleBLower.includes(termLower);
+          if (aIncludes && !bIncludes) return -1;
+          if (!aIncludes && bIncludes) return 1;
+          
+          // 4. 关键词在标题中位置靠前的排在前面
+          const aIndex = titleALower.indexOf(termLower);
+          const bIndex = titleBLower.indexOf(termLower);
+          if (aIndex !== -1 && bIndex !== -1) {
+            return aIndex - bIndex;
+          }
+          
+          // 5. 默认按原始顺序
+          return 0;
+        });
+        setResults(sortedResults);
       } else {
         setError("没有找到相关内容");
       }
@@ -135,14 +169,14 @@ export default function SearchScreen() {
             returnKeyType="search"
           />
         </TouchableOpacity>
-        <StyledButton style={dynamicStyles.searchButton} onPress={onSearchPress}>
-          <Search size={deviceType === 'mobile' ? 20 : 24} color="white" />
-        </StyledButton>
-        {deviceType !== 'mobile' && (
-          <StyledButton style={dynamicStyles.qrButton} onPress={handleQrPress}>
-            <QrCode size={deviceType === 'tv' ? 24 : 20} color="white" />
+        <StyledButton style={dynamicStyles.searchButton} onPress={onSearchPress as any}>
+            <Search size={deviceType === 'mobile' ? 20 : 24} color="white" />
           </StyledButton>
-        )}
+        {deviceType !== 'mobile' && (
+            <StyledButton style={dynamicStyles.qrButton} onPress={handleQrPress as any}>
+              <QrCode size={deviceType === 'tv' ? 24 : 20} color="white" />
+            </StyledButton>
+          )}
       </View>
 
       {loading ? (
