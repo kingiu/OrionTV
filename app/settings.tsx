@@ -9,8 +9,8 @@ import { useThemeColor } from "@/hooks/useThemeColor";
 import { useSettingsStore } from "@/stores/settingsStore";
 // import useAuthStore from "@/stores/authStore";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
-import { APIConfigSection } from "@/components/settings/APIConfigSection";
-import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
+// import { APIConfigSection } from "@/components/settings/APIConfigSection";
+// import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
 import { RemoteInputSection } from "@/components/settings/RemoteInputSection";
 import { UpdateSection } from "@/components/settings/UpdateSection";
 // import { VideoSourceSection } from "@/components/settings/VideoSourceSection";
@@ -171,33 +171,35 @@ export default function SettingsScreen() {
       ),
       key: "remote",
     },
-    {
-      component: (
-        <APIConfigSection
-          ref={apiSectionRef}
-          onChanged={markAsChanged}
-          hideDescription={deviceType === "mobile"}
-          onFocus={() => {
-            setCurrentFocusIndex(1);
-            setCurrentSection("api");
-          }}
-        />
-      ),
-      key: "api",
-    },
-    deviceType !== "mobile" && {
-      component: (
-        <LiveStreamSection
-          ref={liveStreamSectionRef}
-          onChanged={markAsChanged}
-          onFocus={() => {
-            setCurrentFocusIndex(2);
-            setCurrentSection("livestream");
-          }}
-        />
-      ),
-      key: "livestream",
-    },
+    // API配置已隐藏
+    // {
+    //   component: (
+    //     <APIConfigSection
+    //       ref={apiSectionRef}
+    //       onChanged={markAsChanged}
+    //       hideDescription={deviceType === "mobile"}
+    //       onFocus={() => {
+    //         setCurrentFocusIndex(1);
+    //         setCurrentSection("api");
+    //       }}
+    //     />
+    //   ),
+    //   key: "api",
+    // },
+    // 直播源配置已隐藏
+    // deviceType !== "mobile" && {
+    //   component: (
+    //     <LiveStreamSection
+    //       ref={liveStreamSectionRef}
+    //       onChanged={markAsChanged}
+    //       onFocus={() => {
+    //         setCurrentFocusIndex(2);
+    //         setCurrentSection("livestream");
+    //       }}
+    //     />
+    //   ),
+    //   key: "livestream",
+    // },
     Platform.OS === "android" && {
       component: <UpdateSection />,
       key: "update",

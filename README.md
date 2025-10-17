@@ -92,7 +92,7 @@ OrionTV 仅作为视频搜索工具，不存储、上传或分发任何视频内
 
 ## 🌟 Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=zimplexing/OrionTV&type=Date)](https://www.star-history.com/#zimplexing/OrionTV&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=kingiu/OrionTV&type=Date)](https://www.star-history.com/#kingiu/OrionTV&Date)
 
 ## 🙏 致谢
 
