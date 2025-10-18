@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api, SearchResult, PlayRecord } from "@/services/api";
 import { PlayRecordManager } from "@/services/storage";
+import { storageConfig } from "@/services/storageConfig";
 import useAuthStore from "./authStore";
 import { useSettingsStore } from "./settingsStore";
 import { preloadImages } from "@/utils/ImageLoader";
@@ -147,7 +148,10 @@ const useHomeStore = create<HomeState>((set, get) => ({
     try {
       if (selectedCategory.type === "record") {
         const { isLoggedIn } = useAuthStore.getState();
-        if (!isLoggedIn) {
+        const storageType = storageConfig.getStorageType();
+        // 只有在使用API存储且未登录时才不显示播放记录
+        // 本地存储模式下即使未登录也应该显示播放记录
+        if (!isLoggedIn && storageType !== "localstorage") {
           set({ contentData: [], hasMore: false });
           return;
         }
