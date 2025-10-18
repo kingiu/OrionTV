@@ -418,13 +418,35 @@ const useDetailStore = create<DetailState>((set, get) => ({
     logger.info(`[SOURCE_SELECTION] Looking for alternative to "${currentSource}" for episode ${episodeIndex + 1}`);
     logger.info(`[SOURCE_SELECTION] Failed sources: [${Array.from(failedSources).join(', ')}]`);
     
-    // 过滤掉当前source和已失败的sources
-    const availableSources = searchResults.filter(result => 
-      result.source !== currentSource && 
-      !failedSources.has(result.source) &&
-      result.episodes && 
-      result.episodes.length > episodeIndex
-    );
+    // 速度评分函数，用于过滤和排序
+    const speedScore = (speed?: number) => {
+      if (typeof speed !== 'number') return 3; // 未测量
+      if (speed < 300) return 0;     // 非常快
+      if (speed < 600) return 1;     // 快速
+      if (speed < 1000) return 2;    // 中等
+      if (speed < 2000) return 3;    // 较慢
+      return 4;                      // 很慢
+    };
+    
+    // 过滤掉当前source、已失败的sources以及较慢和很慢的资源
+    const availableSources = searchResults.filter(result => {
+      const shouldInclude = result.source !== currentSource && 
+        !failedSources.has(result.source) &&
+        result.episodes && 
+        result.episodes.length > episodeIndex;
+        
+      // 如果有测速结果，过滤掉较慢和很慢的资源
+      if (shouldInclude && result.networkSpeed) {
+        const score = speedScore(result.networkSpeed);
+        const isSlow = score >= 3;
+        if (isSlow) {
+          logger.info(`[SOURCE_SELECTION] Filtering out slow source: ${result.source_name} (${result.networkSpeed.toFixed(2)}ms, score: ${score})`);
+          return false;
+        }
+      }
+      
+      return shouldInclude;
+    });
     
     logger.info(`[SOURCE_SELECTION] Available sources: ${availableSources.length}`);
     availableSources.forEach(source => {
@@ -458,28 +480,17 @@ const useDetailStore = create<DetailState>((set, get) => ({
         return 0;
       };
       
-      // 2. 网络速度评分（值越小越好）
-      // 未测量的速度给予默认中等评分
-      const speedScore = (speed?: number) => {
-        if (typeof speed !== 'number') return 3; // 未测量
-        if (speed < 300) return 0;     // 非常快
-        if (speed < 600) return 1;     // 快速
-        if (speed < 1000) return 2;    // 中等
-        if (speed < 2000) return 3;    // 较慢
-        return 4;                      // 很慢
-      };
-      
       const aSpeedScore = speedScore(a.networkSpeed);
       const bSpeedScore = speedScore(b.networkSpeed);
       
       // 3. 综合评分计算
-      // 分辨率权重占60%，网络速度权重占40%
-      const aResolutionValue = resolutionPriority(aResolution) * 0.6;
-      const bResolutionValue = resolutionPriority(bResolution) * 0.6;
+      // 分辨率权重占50%，网络速度权重占50%
+      const aResolutionValue = resolutionPriority(aResolution) * 0.5;
+      const bResolutionValue = resolutionPriority(bResolution) * 0.5;
       
       // 网络速度评分是反向的（值越小越好），所以用1-评分值
-      const aSpeedValue = (4 - aSpeedScore) * 0.4;
-      const bSpeedValue = (4 - bSpeedScore) * 0.4;
+      const aSpeedValue = (4 - aSpeedScore) * 0.5;
+      const bSpeedValue = (4 - bSpeedScore) * 0.5;
       
       // 计算综合得分
       const aTotalScore = aResolutionValue + aSpeedValue;
