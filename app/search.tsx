@@ -49,9 +49,11 @@ class SearchCacheManager {
 
   set(query: string, results: SearchResult[], total: number): void {
     if (this.cache.size >= this.maxCacheItems) {
-      // 删除最早的缓存项
-      const oldestKey = this.cache.keys().next().value;
-      this.cache.delete(oldestKey);
+      // 删除最早的缓存项 - 添加类型安全检查
+      const oldestKeyResult = this.cache.keys().next();
+      if (!oldestKeyResult.done && typeof oldestKeyResult.value === 'string') {
+        this.cache.delete(oldestKeyResult.value);
+      }
     }
     this.cache.set(query, {
       query,
@@ -180,12 +182,8 @@ export default function SearchScreen() {
     setError(null);
     
     try {
-      // 使用AbortController进行请求控制
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
-      
-      const response = await api.searchVideos(normalizedTerm, controller.signal, 5000, pageNum, pageSize);
-      clearTimeout(timeoutId);
+      // 移除重复的超时控制，直接使用api.searchVideos内部的超时机制
+      const response = await api.searchVideos(normalizedTerm, undefined, 8000, pageNum, pageSize); // 增加超时时间到8秒
       
       if (response.results.length > 0) {
         // 对搜索结果进行排序
