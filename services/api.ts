@@ -75,6 +75,15 @@ export interface ServerConfig {
   StorageType: "localstorage" | "redis" | string;
 }
 
+// 用户信息接口
+export interface UserInfo {
+  username: string;
+  role: string;
+  expiryTime?: number;
+  groupName?: string;
+  isExpired: boolean;
+}
+
 export class API {
   public baseURL: string = "";
 
@@ -144,8 +153,8 @@ export class API {
     return response.json();
   }
 
-  async getServerConfig(): Promise<ServerConfig> {
-    const response = await this._fetch("/api/server-config");
+  async getServerConfig(timeout?: number): Promise<ServerConfig> {
+    const response = await this._fetch("/api/server-config", undefined, timeout || 10000); // 默认10秒超时
     return response.json();
   }
 
@@ -243,9 +252,33 @@ export class API {
   }
 
   async searchVideos(query: string, signal?: AbortSignal, timeout?: number, page: number = 1, pageSize: number = 20): Promise<{ results: SearchResult[], total: number }> {
-    const url = `/api/search?q=${encodeURIComponent(query)}&page=${page}&pageSize=${pageSize}`;
-    const response = await this._fetch(url, { signal }, timeout);
-    return response.json();
+    try {
+      // 检查基础URL是否设置
+      if (!this.baseURL) {
+        throw new Error('API基础URL未设置，请在设置页面配置服务器地址');
+      }
+      
+      const url = `/api/search?q=${encodeURIComponent(query)}&page=${page}&pageSize=${pageSize}`;
+      const response = await this._fetch(url, { signal }, timeout || 10000); // 设置默认超时为10秒
+      return response.json();
+    } catch (error) {
+      let errorMessage = '搜索失败';
+      
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = '搜索请求超时，请检查网络连接或稍后重试';
+        } else if (error.message === 'API基础URL未设置，请在设置页面配置服务器地址') {
+          errorMessage = error.message;
+        } else if (error.message === 'UNAUTHORIZED') {
+          errorMessage = '用户未登录或登录已过期';
+        } else {
+          errorMessage = `搜索失败: ${error.message}`;
+        }
+      }
+      
+      console.error(errorMessage, error);
+      throw new Error(errorMessage);
+    }
   }
 
   async searchVideo(query: string, resourceId: string, signal?: AbortSignal): Promise<{ results: SearchResult[] }> {
@@ -265,6 +298,45 @@ export class API {
     const url = `/api/detail?source=${source}&id=${id}`;
     const response = await this._fetch(url);
     return response.json();
+  }
+
+  // 获取用户信息
+  async getUserInfo(): Promise<UserInfo> {
+    try {
+      // 检查基础URL是否设置
+      if (!this.baseURL) {
+        throw new Error('API基础URL未设置，请检查服务器配置');
+      }
+      
+      const response = await this._fetch("/api/user/info");
+      const data = await response.json();
+      
+      // 确保返回的数据包含所有必需字段
+      return {
+        username: data.username || '',
+        role: data.role || 'user',
+        expiryTime: data.expiryTime,
+        groupName: data.groupName,
+        isExpired: data.isExpired || false
+      };
+    } catch (error) {
+      let errorMessage = '获取用户信息失败';
+      
+      if (error instanceof Error) {
+        if (error.message === 'UNAUTHORIZED') {
+          errorMessage = '用户未登录或登录已过期';
+        } else if (error.message.includes('API基础URL未设置')) {
+          errorMessage = error.message;
+        } else if (error.name === 'AbortError') {
+          errorMessage = '请求超时，请检查网络连接';
+        } else {
+          errorMessage = `获取用户信息失败: ${error.message}`;
+        }
+      }
+      
+      console.error(errorMessage, error);
+      throw new Error(errorMessage);
+    }
   }
 }
 

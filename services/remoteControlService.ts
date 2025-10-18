@@ -120,11 +120,11 @@ class RemoteControlService {
     this.onHandshake = actions.onHandshake;
   }
 
-  public async startServer(): Promise<string> {
+  public async startServer(customIpAddress?: string): Promise<string> {
     logger.debug("[RemoteControl] Attempting to start server...");
 
     try {
-      const url = await this.httpServer.start();
+      const url = await this.httpServer.start(customIpAddress);
       logger.debug(`[RemoteControl] Server started successfully at: ${url}`);
       return url;
     } catch (error) {

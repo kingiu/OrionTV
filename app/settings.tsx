@@ -2,24 +2,25 @@ import React, { useState, useEffect, useRef } from "react";
 import { View, StyleSheet, Alert, Platform } from "react-native";
 import { useTVEventHandler } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { ThemedText } from "@/components/ThemedText";
-import { ThemedView } from "@/components/ThemedView";
-import { StyledButton } from "@/components/StyledButton";
-import { useThemeColor } from "@/hooks/useThemeColor";
-import { useSettingsStore } from "@/stores/settingsStore";
-// import useAuthStore from "@/stores/authStore";
-import { useRemoteControlStore } from "@/stores/remoteControlStore";
-// import { APIConfigSection } from "@/components/settings/APIConfigSection";
-// import { LiveStreamSection } from "@/components/settings/LiveStreamSection";
-import { RemoteInputSection } from "@/components/settings/RemoteInputSection";
-import { UpdateSection } from "@/components/settings/UpdateSection";
-// import { VideoSourceSection } from "@/components/settings/VideoSourceSection";
+import { ThemedText } from "../components/ThemedText";
+import { ThemedView } from "../components/ThemedView";
+import { StyledButton } from "../components/StyledButton";
+import { useThemeColor } from "../hooks/useThemeColor";
+import { useSettingsStore } from "../stores/settingsStore";
+import useAuthStore from "../stores/authStore";
+import { useRemoteControlStore } from "../stores/remoteControlStore";
+import { APIConfigSection } from "../components/settings/APIConfigSection";
+// import { LiveStreamSection } from "../components/settings/LiveStreamSection";
+import { RemoteInputSection } from "../components/settings/RemoteInputSection";
+import { UpdateSection } from "../components/settings/UpdateSection";
+import { UserInfoSection } from "../components/settings/UserInfoSection";
+// import { VideoSourceSection } from "../components/settings/VideoSourceSection";
 import Toast from "react-native-toast-message";
-import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
-import { getCommonResponsiveStyles } from "@/utils/ResponsiveStyles";
-import ResponsiveNavigation from "@/components/navigation/ResponsiveNavigation";
-import ResponsiveHeader from "@/components/navigation/ResponsiveHeader";
-import { DeviceUtils } from "@/utils/DeviceUtils";
+import { useResponsiveLayout } from "../hooks/useResponsiveLayout";
+import { getCommonResponsiveStyles } from "../utils/ResponsiveStyles";
+import ResponsiveNavigation from "../components/navigation/ResponsiveNavigation";
+import ResponsiveHeader from "../components/navigation/ResponsiveHeader";
+import { DeviceUtils } from "../utils/DeviceUtils";
 import { KeyboardAwareScrollView } from 'react-native-keyboard-aware-scroll-view';
 
 type SectionItem = {
@@ -35,8 +36,9 @@ function isSectionItem(
 }
 
 export default function SettingsScreen() {
-  const { loadSettings, saveSettings, setApiBaseUrl, setM3uUrl } = useSettingsStore();
+  const { loadSettings, saveSettings, setApiBaseUrl, setM3uUrl, apiBaseUrl } = useSettingsStore();
   const { lastMessage, targetPage, clearMessage } = useRemoteControlStore();
+  const { isLoggedIn, checkLoginStatus } = useAuthStore();
   const backgroundColor = useThemeColor({}, "background");
   const insets = useSafeAreaInsets();
 
@@ -48,15 +50,21 @@ export default function SettingsScreen() {
   const [hasChanges, setHasChanges] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [currentFocusIndex, setCurrentFocusIndex] = useState(0);
-  const [currentSection, setCurrentSection] = useState<string | null>(null);
-
+  const [currentSection, setCurrentSection] = useState<string>("");
+  
   const saveButtonRef = useRef<any>(null);
   const apiSectionRef = useRef<any>(null);
   const liveStreamSectionRef = useRef<any>(null);
 
   useEffect(() => {
     loadSettings();
-  }, [loadSettings]);
+    // 检查登录状态
+    if (apiBaseUrl) {
+      checkLoginStatus(apiBaseUrl);
+    }
+  }, [loadSettings, checkLoginStatus, apiBaseUrl]);
+
+  // 移除远程输入设置的特殊处理代码，避免TypeScript错误
 
   useEffect(() => {
     if (lastMessage && !targetPage) {
@@ -159,19 +167,49 @@ export default function SettingsScreen() {
   //   },
   // ].filter(Boolean);
   const rawSections = [
+    // 用户信息部分
+    isLoggedIn && {
+      component: (
+        <UserInfoSection
+          onFocus={() => {
+            setCurrentFocusIndex(0);
+            setCurrentSection("userInfo");
+          }}
+        />
+      ),
+      key: "userInfo",
+    },
+    {
+      component: (
+        <APIConfigSection
+          ref={apiSectionRef}
+          onChanged={markAsChanged}
+          hideDescription={deviceType === "mobile"}
+          onFocus={() => {
+            // 根据是否显示用户信息调整索引
+            const index = isLoggedIn ? 1 : 0;
+            setCurrentFocusIndex(index);
+            setCurrentSection("api");
+          }}
+        />
+      ),
+      key: "api",
+    },
     deviceType !== "mobile" && {
       component: (
         <RemoteInputSection
           onChanged={markAsChanged}
           onFocus={() => {
-            setCurrentFocusIndex(0);
+            // 根据是否显示用户信息和API配置调整索引
+            let index = 1;
+            if (isLoggedIn) index = 2;
+            setCurrentFocusIndex(index);
             setCurrentSection("remote");
           }}
         />
       ),
       key: "remote",
     },
-    // API配置已隐藏
     // {
     //   component: (
     //     <APIConfigSection

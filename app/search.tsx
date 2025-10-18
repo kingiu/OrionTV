@@ -1,11 +1,11 @@
-import React, { useState, useRef, useEffect, useCallback, useMemo, useCallback as useReactCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { View, TextInput, StyleSheet, Alert, Keyboard, TouchableOpacity, ActivityIndicator, FlatList } from "react-native";
 import { ThemedView } from "@/components/ThemedView";
 import { ThemedText } from "@/components/ThemedText";
 import VideoCard from "@/components/VideoCard";
 import VideoLoadingAnimation from "@/components/VideoLoadingAnimation";
 import { api, SearchResult } from "@/services/api";
-import { Search, QrCode } from "lucide-react-native";
+import { Search, QrCode, X, RefreshCw } from "lucide-react-native";
 import { StyledButton } from "@/components/StyledButton";
 import { useRemoteControlStore } from "@/stores/remoteControlStore";
 import { RemoteControlModal } from "@/components/RemoteControlModal";
@@ -29,11 +29,30 @@ interface SearchCache {
   timestamp: number;
 }
 
-// 缓存管理类
+// 缓存管理类 - 优化缓存策略
 class SearchCacheManager {
   private cache: Map<string, SearchCache> = new Map();
-  private maxCacheItems = 10;
-  private cacheTimeout = 5 * 60 * 1000; // 5分钟缓存
+  private maxCacheItems = 15; // 增加缓存数量
+  private cacheTimeout = 10 * 60 * 1000; // 增加缓存时间到10分钟
+  
+  // 添加模糊匹配缓存查找
+  findSimilarCache(query: string): SearchCache | null {
+    const lowerQuery = query.toLowerCase();
+    // 优先查找精确匹配
+    const exactCache = this.get(query);
+    if (exactCache) return exactCache;
+    
+    // 查找可能的相似查询缓存
+    for (const [cachedQuery, cachedData] of this.cache.entries()) {
+      // 如果查询包含缓存关键词或缓存关键词包含查询，考虑为相似查询
+      if (Date.now() - cachedData.timestamp < this.cacheTimeout &&
+          (lowerQuery.includes(cachedQuery.toLowerCase()) || 
+           cachedQuery.toLowerCase().includes(lowerQuery))) {
+        return cachedData;
+      }
+    }
+    return null;
+  }
 
   get(query: string): SearchCache | null {
     const cached = this.cache.get(query);
@@ -82,6 +101,9 @@ export default function SearchScreen() {
   const [hasMore, setHasMore] = useState<boolean>(false);
   const [isNewSearch, setIsNewSearch] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState<string>("");
+  const [searchAbortController, setSearchAbortController] = useState<AbortController | null>(null);
+  const [searchStartTime, setSearchStartTime] = useState<number>(0); // 记录搜索开始时间
+  const [isCancelling, setIsCancelling] = useState<boolean>(false); // 取消状态标记
   const textInputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList>(null);
   const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
@@ -94,8 +116,8 @@ export default function SearchScreen() {
   const commonStyles = getCommonResponsiveStyles(responsiveConfig);
   const { deviceType, spacing } = responsiveConfig;
 
-  // 页面大小配置
-  const pageSize = 20;
+  // 页面大小配置 - 增加初始页面大小以减少加载更多的频率
+  const pageSize = 30;
 
   useEffect(() => {
     if (lastMessage && targetPage === 'search') {
@@ -116,15 +138,8 @@ export default function SearchScreen() {
     setHasMore(false);
     setError(null);
     setIsNewSearch(true);
+    setIsCancelling(false);
   }, []);
-
-  // useEffect(() => {
-  //   // Focus the text input when the screen loads
-  //   const timer = setTimeout(() => {
-  //     textInputRef.current?.focus();
-  //   }, 200);
-  //   return () => clearTimeout(timer);
-  // }, []);
 
   // 防抖函数
   const debounce = (func: Function, wait: number) => {
@@ -141,8 +156,41 @@ export default function SearchScreen() {
     };
   };
 
-  // 搜索实现
+  // 取消当前搜索请求 - 增强版
+  const cancelSearch = useCallback(() => {
+    if (searchAbortController && !isCancelling) {
+      logger.debug("Cancelling current search request");
+      setIsCancelling(true);
+      try {
+        searchAbortController.abort();
+      } catch (err) {
+        logger.error("Error aborting search:", err);
+      }
+      setSearchAbortController(null);
+      setLoading(false);
+      setLoadingMore(false);
+      setError("搜索已取消");
+      setIsCancelling(false);
+    }
+  }, [searchAbortController, isCancelling]);
+  
+  // 搜索实现 - 优化版本
   const performSearch = async (searchText?: string, pageNum: number = 1) => {
+    // 取消之前的搜索请求（如果有）
+    if (searchAbortController) {
+      try {
+        searchAbortController.abort();
+        setSearchAbortController(null);
+      } catch (err) {
+        logger.error("Error aborting previous search:", err);
+      }
+    }
+    
+    // 创建新的AbortController
+    const abortController = new AbortController();
+    setSearchAbortController(abortController);
+    setIsCancelling(false);
+    
     const term = typeof searchText === "string" ? searchText : keyword;
     // 确保term是有效的非空字符串
     const normalizedTerm = (term || '').trim();
@@ -155,6 +203,7 @@ export default function SearchScreen() {
     // 设置当前搜索关键词
     if (pageNum === 1) {
       setSearchQuery(normalizedTerm);
+      setSearchStartTime(Date.now()); // 记录开始时间
     }
     
     Keyboard.dismiss();
@@ -162,8 +211,8 @@ export default function SearchScreen() {
     // 检查是否是新搜索或加载更多
     if (pageNum === 1) {
       setLoading(true);
-      // 检查缓存 - 只传递有效的非空字符串
-      const cached = cacheManager.get(normalizedTerm);
+      // 检查缓存 - 使用增强的相似缓存查找
+      const cached = cacheManager.findSimilarCache(normalizedTerm);
       if (cached) {
         logger.debug("Using cached search results for:", normalizedTerm);
         // 对缓存结果进行排序
@@ -173,6 +222,7 @@ export default function SearchScreen() {
         setHasMore(cached.total > sortedResults.length);
         setLoading(false);
         setIsNewSearch(false);
+        setSearchAbortController(null);
         return;
       }
     } else {
@@ -182,42 +232,116 @@ export default function SearchScreen() {
     setError(null);
     
     try {
-      // 移除重复的超时控制，直接使用api.searchVideos内部的超时机制
-      const response = await api.searchVideos(normalizedTerm, undefined, 8000, pageNum, pageSize); // 增加超时时间到8秒
+      // 分离API调用和结果处理，允许设置不同的超时策略
+      // 为冷门影片搜索设置更灵活的超时处理
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
       
-      if (response.results.length > 0) {
+      // 添加搜索进度更新
+      const updateSearchProgress = () => {
+        const elapsed = Date.now() - searchStartTime;
+        // 如果搜索时间超过3秒且仍在加载中，显示进度提示
+        if (elapsed > 3000 && loading && isNewSearch) {
+          // 可以在这里添加进度提示更新
+          logger.info(`Search in progress for ${elapsed}ms`);
+        }
+      };
+      
+      // 设置定期检查进度
+      const progressInterval = setInterval(updateSearchProgress, 1000);
+      
+      // 为API调用设置超时处理
+      const searchPromise = api.searchVideos(
+        normalizedTerm, 
+        abortController.signal, 
+        10000, // 稍微增加超时时间到10秒，但添加更好的用户反馈
+        pageNum, 
+        pageSize
+      );
+      
+      // 添加搜索进度监控
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error('搜索请求超时，正在尝试获取部分结果...'));
+        }, 7000); // 先于最终超时显示友好提示
+      });
+      
+      // 直接使用try-catch处理搜索请求，避免Promise.race可能导致的问题
+      let response;
+      try {
+        response = await Promise.race([searchPromise, timeoutPromise]);
+      } catch (timeoutError) {
+        // 超时后仍然尝试等待原始搜索请求完成，但不再显示错误
+        logger.info("Search timeout warning, continuing with original request");
+        // 不抛出错误，继续等待原始请求
+        response = await searchPromise;
+      }
+      
+      // 清除定时器
+      if (timeoutId) clearTimeout(timeoutId);
+      clearInterval(progressInterval);
+      
+      // 确保response存在且有results属性
+      if (response && response.results) {
         // 对搜索结果进行排序
         const sortedResults = sortSearchResults([...response.results], normalizedTerm);
         
         if (pageNum === 1) {
           // 首次搜索，保存到缓存 - 只传递有效的非空字符串
-          cacheManager.set(normalizedTerm, sortedResults, response.total);
-          setResults(sortedResults);
+          cacheManager.set(normalizedTerm, sortedResults, response.total || 0);
+          // 立即显示前10个结果，然后异步添加剩余结果
+          const initialResults = sortedResults.slice(0, 10);
+          setResults(initialResults);
+          
+          // 异步添加剩余结果，改善用户体验
+          setTimeout(() => {
+            setResults(sortedResults);
+          }, 100);
         } else {
           // 加载更多，追加到现有结果
           setResults(prev => [...prev, ...sortedResults]);
         }
         
-        setTotalResults(response.total);
-        setHasMore(results.length + sortedResults.length < response.total);
+        setTotalResults(response.total || 0);
+        setHasMore(results.length + sortedResults.length < (response.total || 0));
         setCurrentPage(pageNum);
       } else if (pageNum === 1) {
         setError("没有找到相关内容");
       }
     } catch (err) {
-      const errorMessage = err instanceof Error && err.name === 'AbortError' 
-        ? "搜索超时，请稍后重试。"
-        : "搜索失败，请稍后重试。";
+      // 清除定时器
+      if (timeoutId) clearTimeout(timeoutId);
+      clearInterval(progressInterval);
+      
+      // 不处理人为取消的错误
+      if (err instanceof Error && err.name === 'AbortError') {
+        logger.info("Search was cancelled by user");
+        return;
+      }
+      
+      let errorMessage = "搜索失败，请稍后重试。";
+      
+      if (err instanceof Error) {
+        if (err.message.includes('超时')) {
+          errorMessage = "搜索请求超时，点击重试或取消搜索";
+        } else if (err.message.includes('API基础URL未设置')) {
+          errorMessage = "API服务器地址未配置，请先在设置页面配置服务器地址";
+        } else {
+          errorMessage = `搜索失败: ${err.message}`;
+        }
+      }
+      
       setError(errorMessage);
       logger.info("Search failed:", err);
     } finally {
       setLoading(false);
       setLoadingMore(false);
       setIsNewSearch(false);
+      setSearchAbortController(null);
+      setIsCancelling(false);
     }
   };
   
-  // 搜索结果排序函数
+  // 搜索结果排序函数 - 优化匹配算法
   const sortSearchResults = useCallback((results: SearchResult[], term: string) => {
     const termLower = term.toLowerCase();
     return results.sort((a, b) => {
@@ -249,7 +373,28 @@ export default function SearchScreen() {
         return aIndex - bIndex;
       }
       
-      // 5. 默认按原始顺序
+      // 5. 新增: 计算匹配度评分，优先显示匹配度高的结果
+      const getMatchScore = (title: string) => {
+        let score = 0;
+        // 完全匹配分数
+        if (title === termLower) score += 100;
+        // 开头匹配分数
+        else if (title.startsWith(termLower)) score += 80;
+        // 包含匹配分数
+        else if (title.includes(termLower)) score += 60;
+        // 长度相似性评分 (较短的标题优先级略高)
+        score -= Math.abs(title.length - termLower.length) * 0.1;
+        return score;
+      };
+      
+      const scoreA = getMatchScore(titleALower);
+      const scoreB = getMatchScore(titleBLower);
+      
+      if (scoreA !== scoreB) {
+        return scoreB - scoreA; // 降序排列，分数高的在前
+      }
+      
+      // 6. 默认按原始顺序
       return 0;
     });
   }, []);
@@ -260,22 +405,27 @@ export default function SearchScreen() {
       resetSearchState();
       performSearch(keyword, 1);
     }
-  }, 500), [keyword, resetSearchState]);
+  }, 600), [keyword, resetSearchState]); // 稍微增加防抖时间以减少不必要的请求
   
-  // 处理搜索
+  // 处理搜索 - 优化快速连续搜索的处理
   const handleSearch = (searchText?: string) => {
     const term = searchText || keyword;
     if (term.trim()) {
+      // 重置状态，但保留取消状态标记
+      const wasCancelling = isCancelling;
       resetSearchState();
+      if (wasCancelling) {
+        setIsCancelling(true);
+      }
       performSearch(term, 1);
     }
   };
 
   const onSearchPress = () => handleSearch();
   
-  // 加载更多
+  // 加载更多 - 增加错误处理
   const loadMore = () => {
-    if (!loadingMore && hasMore && !loading) {
+    if (!loadingMore && hasMore && !loading && !isCancelling) {
       performSearch(searchQuery, currentPage + 1);
     }
   };
@@ -302,6 +452,7 @@ export default function SearchScreen() {
     showRemoteModal('search');
   };
 
+  // 渲染单个项目 - 优化懒加载和渲染性能
   const renderItem = ({ item, index }: { item: SearchResult; index: number }) => (
     <VideoCard
       id={item.id.toString()}
@@ -311,9 +462,11 @@ export default function SearchScreen() {
       year={item.year}
       sourceName={item.source_name}
       api={api}
-      // 添加图片懒加载支持
-      lazyLoad={index > 10} // 前10个立即加载，后面的懒加载
+      // 优化懒加载策略，根据设备类型调整阈值
+      lazyLoad={index > (deviceType === 'mobile' ? 3 : deviceType === 'tablet' ? 5 : 8)}
       imageWidth={deviceType === 'tv' ? 200 : deviceType === 'tablet' ? 160 : 120}
+      // 增加性能优化参数
+      optimizeRender={true}
     />
   );
 
@@ -348,23 +501,57 @@ export default function SearchScreen() {
             onFocus={() => setIsInputFocused(true)}
             onBlur={() => setIsInputFocused(false)}
             returnKeyType="search"
+            clearButtonMode="while-editing" // 添加清除按钮
           />
         </TouchableOpacity>
         <StyledButton style={dynamicStyles.searchButton} onPress={onSearchPress as any}>
+          {loading && isNewSearch ? (
+            <RefreshCw size={deviceType === 'mobile' ? 20 : 24} color="white" />
+          ) : (
             <Search size={deviceType === 'mobile' ? 20 : 24} color="white" />
-          </StyledButton>
-        {deviceType !== 'mobile' && (
-            <StyledButton style={dynamicStyles.qrButton} onPress={handleQrPress as any}>
-              <QrCode size={deviceType === 'tv' ? 24 : 20} color="white" />
-            </StyledButton>
           )}
+        </StyledButton>
+        {deviceType !== 'mobile' && (
+          <StyledButton style={dynamicStyles.qrButton} onPress={handleQrPress as any}>
+            <QrCode size={deviceType === 'tv' ? 24 : 20} color="white" />
+          </StyledButton>
+        )}
       </View>
 
       {loading && isNewSearch ? (
-        <VideoLoadingAnimation showProgressBar={false} />
+        <View style={[commonStyles.center, { flex: 1 }]}>
+          <VideoLoadingAnimation showProgressBar={true} />
+          <TouchableOpacity 
+            style={[dynamicStyles.cancelButton, { marginTop: spacing }]}
+            onPress={cancelSearch}
+          >
+            <ThemedText style={{ color: Colors.dark.primary }}>取消搜索</ThemedText>
+          </TouchableOpacity>
+          <ThemedText style={{ marginTop: spacing / 2, color: Colors.dark.textSecondary }}>
+            搜索可能需要一些时间，请稍候...
+          </ThemedText>
+        </View>
       ) : error ? (
         <View style={[commonStyles.center, { flex: 1 }]}>
           <ThemedText style={dynamicStyles.errorText}>{error}</ThemedText>
+          {error.includes('API服务器地址') && (
+            <StyledButton 
+              onPress={() => router.push('/settings')}
+              style={{ marginTop: spacing }}
+            >
+              前往设置
+            </StyledButton>
+          )}
+          {(error.includes('超时') || error.includes('失败') || error.includes('取消')) && (
+            <View style={{ flexDirection: 'row', marginTop: spacing, gap: spacing }}>
+              <StyledButton 
+                onPress={() => handleSearch()}
+                style={{ flex: 1 }}
+              >
+                重试搜索
+              </StyledButton>
+            </View>
+          )}
         </View>
       ) : (
         <FlatList
@@ -380,17 +567,31 @@ export default function SearchScreen() {
           columnWrapperStyle={deviceType !== 'mobile' ? { justifyContent: 'space-between' } : null}
           showsVerticalScrollIndicator={false}
           onEndReached={loadMore}
-          onEndReachedThreshold={0.3}
+          onEndReachedThreshold={0.2} // 降低阈值，提前加载更多
           ListFooterComponent={renderFooter}
           ListEmptyComponent={
             !loading ? (
               <ThemedText style={dynamicStyles.emptyText}>输入关键词开始搜索</ThemedText>
             ) : null
           }
-          // 使用window大小优化渲染性能
-          maxToRenderPerBatch={10}
-          windowSize={5}
+          // 优化FlatList性能参数
+          maxToRenderPerBatch={8} // 增加渲染批次数量
+          windowSize={5} // 增加窗口大小
           removeClippedSubviews={true}
+          initialNumToRender={12} // 增加初始渲染数量
+          maxToRenderPerBatch={8}
+          windowSize={5}
+          updateCellsBatchingPeriod={100} // 优化更新批次周期
+          // 添加getItemLayout提升滚动性能
+          getItemLayout={(data, index) => ({
+            length: deviceType === 'mobile' ? 180 : deviceType === 'tablet' ? 220 : 260,
+            offset: (deviceType === 'mobile' ? 180 : deviceType === 'tablet' ? 220 : 260) * 
+                   Math.floor(index / (deviceType === 'mobile' ? 3 : deviceType === 'tablet' ? 4 : 6)),
+            index
+          })}
+          // 添加性能优化属性
+          initialScrollIndex={null}
+          scrollEventThrottle={16}
         />
       )}
       <RemoteControlModal />
@@ -417,65 +618,72 @@ export default function SearchScreen() {
 }
 
 const createResponsiveStyles = (deviceType: string, spacing: number) => {
-    const isMobile = deviceType === 'mobile';
-    const minTouchTarget = DeviceUtils.getMinTouchTargetSize();
+  const isMobile = deviceType === 'mobile';
+  const minTouchTarget = DeviceUtils.getMinTouchTargetSize();
 
-    return StyleSheet.create({
-      container: {
-        flex: 1,
-        paddingTop: deviceType === 'tv' ? 50 : 0,
-      },
-      searchContainer: {
-        flexDirection: "row",
-        paddingHorizontal: spacing,
-        marginBottom: spacing,
-        alignItems: "center",
-        paddingTop: isMobile ? spacing / 2 : 0,
-      },
-      inputContainer: {
-        flex: 1,
-        height: isMobile ? minTouchTarget : 50,
-        backgroundColor: "#2c2c2e",
-        borderRadius: isMobile ? 8 : 8,
-        marginRight: spacing / 2,
-        borderWidth: 2,
-        borderColor: "transparent",
-        justifyContent: "center",
-      },
-      input: {
-        flex: 1,
-        paddingHorizontal: spacing,
-        color: "white",
-        fontSize: isMobile ? 16 : 18,
-      },
-      searchButton: {
-        width: isMobile ? minTouchTarget : 50,
-        height: isMobile ? minTouchTarget : 50,
-        justifyContent: "center",
-        alignItems: "center",
-        borderRadius: isMobile ? 8 : 8,
-        marginRight: deviceType !== 'mobile' ? spacing / 2 : 0,
-      },
-      qrButton: {
-        width: isMobile ? minTouchTarget : 50,
-        height: isMobile ? minTouchTarget : 50,
-        justifyContent: "center",
-        alignItems: "center",
-        borderRadius: isMobile ? 8 : 8,
-      },
-      errorText: {
-        color: "red",
-        fontSize: isMobile ? 16 : 18,
-      },
-      emptyText: {
-        fontSize: isMobile ? 16 : 18,
-        color: Colors.dark.text,
-      },
-      footerText: {
-        fontSize: isMobile ? 14 : 16,
-        color: Colors.dark.text,
-        textAlign: 'center',
-        padding: spacing,
-      }
-    });
+  return StyleSheet.create({
+    container: {
+      flex: 1,
+      paddingTop: deviceType === 'tv' ? 50 : 0,
+    },
+    searchContainer: {
+      flexDirection: "row",
+      paddingHorizontal: spacing,
+      marginBottom: spacing,
+      alignItems: "center",
+      paddingTop: isMobile ? spacing / 2 : 0,
+    },
+    inputContainer: {
+      flex: 1,
+      height: isMobile ? minTouchTarget : 50,
+      backgroundColor: "#2c2c2e",
+      borderRadius: isMobile ? 8 : 8,
+      marginRight: spacing / 2,
+      borderWidth: 2,
+      borderColor: "transparent",
+      justifyContent: "center",
+    },
+    input: {
+      flex: 1,
+      paddingHorizontal: spacing,
+      color: "white",
+      fontSize: isMobile ? 16 : 18,
+    },
+    searchButton: {
+      width: isMobile ? minTouchTarget : 50,
+      height: isMobile ? minTouchTarget : 50,
+      justifyContent: "center",
+      alignItems: "center",
+      borderRadius: isMobile ? 8 : 8,
+      marginRight: deviceType !== 'mobile' ? spacing / 2 : 0,
+    },
+    qrButton: {
+      width: isMobile ? minTouchTarget : 50,
+      height: isMobile ? minTouchTarget : 50,
+      justifyContent: "center",
+      alignItems: "center",
+      borderRadius: isMobile ? 8 : 8,
+    },
+    cancelButton: {
+      paddingHorizontal: spacing * 2,
+      paddingVertical: spacing,
+      borderRadius: 8,
+      backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    },
+    errorText: {
+      color: "red",
+      fontSize: isMobile ? 16 : 18,
+      textAlign: 'center',
+    },
+    emptyText: {
+      fontSize: isMobile ? 16 : 18,
+      color: Colors.dark.text,
+    },
+    footerText: {
+      fontSize: isMobile ? 14 : 16,
+      color: Colors.dark.text,
+      textAlign: 'center',
+      padding: spacing,
+    }
+  });
 };

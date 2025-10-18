@@ -98,16 +98,19 @@ class TCPHttpServer {
     this.requestHandler = handler;
   }
 
-  public async start(): Promise<string> {
-    const netState = await NetInfo.fetch();
-    let ipAddress: string | null = null;
+  public async start(customIpAddress?: string): Promise<string> {
+    let ipAddress: string | null = customIpAddress || null;
     
-    if (netState.type === 'wifi' || netState.type === 'ethernet') {
-      ipAddress = (netState.details as any)?.ipAddress ?? null;
-    }
-
+    // 如果没有提供自定义IP地址，则尝试自动获取
     if (!ipAddress) {
-      throw new Error('无法获取IP地址，请确认设备已连接到WiFi或以太网。');
+      const netState = await NetInfo.fetch();
+      if (netState.type === 'wifi' || netState.type === 'ethernet') {
+        ipAddress = (netState.details as any)?.ipAddress ?? null;
+      }
+
+      if (!ipAddress) {
+        throw new Error('无法获取IP地址，请确认设备已连接到WiFi或以太网。');
+      }
     }
 
     if (this.isRunning) {

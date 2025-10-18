@@ -32,6 +32,10 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
     const deviceType = useResponsiveLayout().deviceType;
 
     const handleUrlChange = (url: string) => {
+      // 自动补全http/https前缀
+      if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+        url = `http://${url}`;
+      }
       setApiBaseUrl(url);
       onChanged();
     };
@@ -89,7 +93,7 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
           <View style={styles.titleContainer}>
             <ThemedText style={styles.sectionTitle}>API 地址</ThemedText>
             {!hideDescription && remoteInputEnabled && serverUrl && (
-              <ThemedText style={styles.subtitle}>用手机访问 {serverUrl}，可远程输入</ThemedText>
+              <ThemedText style={styles.subtitle}>用手机访问 {serverUrl}，可远程输入 (例如: http://server.example.com 或 https://api.example.com)</ThemedText>
             )}
           </View>
           <Animated.View style={inputAnimationStyle}>
@@ -98,7 +102,7 @@ export const APIConfigSection = forwardRef<APIConfigSectionRef, APIConfigSection
               style={[styles.input, isInputFocused && styles.inputFocused]}
               value={apiBaseUrl}
               onChangeText={handleUrlChange}
-              placeholder="输入服务器地址"
+              placeholder="输入服务器地址，例如: http://server.example.com"
               placeholderTextColor="#888"
               autoCapitalize="none"
               autoCorrect={false}
