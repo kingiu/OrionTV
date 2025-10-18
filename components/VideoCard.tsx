@@ -23,6 +23,9 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   onFocus?: () => void;
   onRecordDeleted?: () => void;
   api: API;
+  lazyLoad?: boolean;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 /**

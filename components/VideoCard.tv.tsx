@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, TouchableOpacity, Alert, Animated, Platform } from "react-native";
+import { OptimizedImage } from '../utils/ImageLoader';
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
 import { PlayRecordManager } from "@/services/storage";
@@ -10,6 +11,8 @@ import Logger from '@/utils/Logger';
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 
 const logger = Logger.withTag('VideoCardTV');
+
+// 定义卡片尺寸常量 - 将在组件中使用
 
 interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   id: string;
@@ -26,6 +29,9 @@ interface VideoCardProps extends React.ComponentProps<typeof TouchableOpacity> {
   onFocus?: () => void;
   onRecordDeleted?: () => void; // 添加回调属性
   api: API;
+  lazyLoad?: boolean;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 const VideoCard = forwardRef<View, VideoCardProps>(
@@ -44,6 +50,9 @@ const VideoCard = forwardRef<View, VideoCardProps>(
       onRecordDeleted,
       api,
       playTime = 0,
+      lazyLoad = false,
+      imageWidth,
+      imageHeight,
     }: VideoCardProps,
     ref
   ) => {
@@ -166,7 +175,14 @@ const VideoCard = forwardRef<View, VideoCardProps>(
           delayLongPress={1000}
         >
           <View style={styles.card}>
-            <Image source={{ uri: api.getImageProxyUrl(poster) }} style={styles.poster} />
+            <OptimizedImage
+              source={{ uri: api.getImageProxyUrl(poster, imageWidth || CARD_WIDTH, imageHeight || CARD_HEIGHT) }}
+              style={styles.poster}
+              resizeMode={'cover'}
+              lazyLoad={lazyLoad}
+              targetWidth={imageWidth || CARD_WIDTH}
+              targetHeight={imageHeight || CARD_HEIGHT}
+            />
             {isFocused && (
               <View style={styles.overlay}>
                 {isContinueWatching && (
@@ -222,6 +238,7 @@ VideoCard.displayName = "VideoCard";
 
 export default VideoCard;
 
+// 使用这些常量定义样式
 const CARD_WIDTH = 160;
 const CARD_HEIGHT = 240;
 

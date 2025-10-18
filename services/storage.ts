@@ -315,7 +315,7 @@ export class SearchHistoryManager {
 export class SettingsManager {
   static async get(): Promise<AppSettings> {
     const defaultSettings: AppSettings = {
-      apiBaseUrl: "https://oriontv.aisxuexi.com",
+      apiBaseUrl: "https://oriontv.aisxuexi.com", // 设置默认API地址
       remoteInputEnabled: true,
       videoSource: {
         enabledAll: true,

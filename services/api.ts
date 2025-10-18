@@ -88,22 +88,36 @@ export class API {
     this.baseURL = url;
   }
 
-  private async _fetch(url: string, options: RequestInit = {}): Promise<Response> {
+  private async _fetch(url: string, options: RequestInit = {}, timeout: number = 10000): Promise<Response> {
     if (!this.baseURL) {
       throw new Error("API_URL_NOT_SET");
     }
 
-    const response = await fetch(`${this.baseURL}${url}`, options);
+    // 添加超时控制
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    
+    // 合并options和signal
+    const fetchOptions = {
+      ...options,
+      signal: options.signal || controller.signal
+    };
 
-    if (response.status === 401) {
-      throw new Error("UNAUTHORIZED");
+    try {
+      const response = await fetch(`${this.baseURL}${url}`, fetchOptions);
+      
+      if (response.status === 401) {
+        throw new Error("UNAUTHORIZED");
+      }
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    return response;
   }
 
   async login(username?: string | undefined, password?: string): Promise<{ ok: boolean }> {
@@ -196,8 +210,25 @@ export class API {
     return response.json();
   }
 
-  getImageProxyUrl(imageUrl: string): string {
-    return `${this.baseURL}/api/image-proxy?url=${encodeURIComponent(imageUrl)}`;
+  /**
+   * 获取图片代理URL
+   * @param imageUrl 原始图片URL
+   * @param width 可选的目标宽度
+   * @param height 可选的目标高度
+   */
+  getImageProxyUrl(imageUrl: string, width?: number, height?: number): string {
+    let url = `${this.baseURL}/api/image-proxy?url=${encodeURIComponent(imageUrl)}`;
+    
+    // 添加尺寸参数（如果提供）
+    if (width && height) {
+      url += `&width=${width}&height=${height}`;
+    } else if (width) {
+      url += `&width=${width}`;
+    } else if (height) {
+      url += `&height=${height}`;
+    }
+    
+    return url;
   }
 
   async getDoubanData(
@@ -211,9 +242,9 @@ export class API {
     return response.json();
   }
 
-  async searchVideos(query: string): Promise<{ results: SearchResult[] }> {
-    const url = `/api/search?q=${encodeURIComponent(query)}`;
-    const response = await this._fetch(url);
+  async searchVideos(query: string, signal?: AbortSignal, timeout?: number, page: number = 1, pageSize: number = 20): Promise<{ results: SearchResult[], total: number }> {
+    const url = `/api/search?q=${encodeURIComponent(query)}&page=${page}&pageSize=${pageSize}`;
+    const response = await this._fetch(url, { signal }, timeout);
     return response.json();
   }
 

@@ -31,7 +31,7 @@ export const useApiConfig = () => {
       setValidationState({
         isValidating: false,
         isValid: false,
-        error: null,
+        error: null, // 未配置时不显示错误，而是显示需要配置的提示
       });
       return;
     }
@@ -120,11 +120,11 @@ export const useApiConfig = () => {
 
 export const getApiConfigErrorMessage = (status: ApiConfigStatus): string => {
   if (status.needsConfiguration) {
-    return '请点击右上角设置按钮，配置您的服务器地址';
+    return '欢迎使用OrionTV！请点击右上角设置按钮，配置您的服务器地址';
   }
 
   if (status.error) {
-    return status.error;
+    return `服务器连接错误: ${status.error}`;
   }
 
   if (status.isValidating) {
@@ -132,8 +132,8 @@ export const getApiConfigErrorMessage = (status: ApiConfigStatus): string => {
   }
 
   if (status.isValid === false) {
-    return '服务器配置验证失败，请检查设置';
+    return '服务器配置验证失败，请检查设置是否正确';
   }
 
-  return '加载失败，请重试';
+  return '加载失败，请重试或检查服务器配置';
 };

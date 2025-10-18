@@ -3,6 +3,7 @@ import { api, SearchResult, PlayRecord } from "@/services/api";
 import { PlayRecordManager } from "@/services/storage";
 import useAuthStore from "./authStore";
 import { useSettingsStore } from "./settingsStore";
+import { preloadImages } from "@/utils/ImageLoader";
 
 export type RowItem = (SearchResult | PlayRecord) & {
   id: string;
@@ -211,6 +212,18 @@ const useHomeStore = create<HomeState>((set, get) => ({
             type: selectedCategory.type,
             hasMore: true // 始终为 true，因为我们允许继续加载
           });
+          
+          // 预加载前几个图片以提高用户体验
+          const imagesToPreload = newItems.slice(0, 20)
+            .filter(item => item.poster)
+            .map(item => ({
+              uri: item.poster || '',
+              width: 200,
+              height: 300
+            }));
+          if (imagesToPreload.length > 0) {
+            preloadImages(imagesToPreload);
+          }
 
           set({
             contentData: newItems, // 使用完整的新数据

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, TouchableOpacity, Alert, Animated } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Animated } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
 import { PlayRecordManager } from "@/services/storage";
@@ -8,6 +8,7 @@ import { ThemedText } from "@/components/ThemedText";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { DeviceUtils } from "@/utils/DeviceUtils";
+import { OptimizedImage, preloadImage } from "@/utils/ImageLoader";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('ResponsiveVideoCard');
@@ -46,7 +47,7 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
       api,
       playTime = 0,
     }: VideoCardProps,
-    ref
+    ref: React.ForwardedRef<View>
   ) => {
     const router = useRouter();
     const [isFocused, setIsFocused] = useState(false);
@@ -211,7 +212,13 @@ const ResponsiveVideoCard = forwardRef<View, VideoCardProps>(
           delayLongPress={responsiveConfig.deviceType === 'mobile' ? 500 : 1000}
         >
           <View style={dynamicStyles.card}>
-            <Image source={{ uri: api.getImageProxyUrl(poster) }} style={styles.poster} />
+            <OptimizedImage
+              source={{ uri: api.getImageProxyUrl(poster, cardWidth, cardHeight) }}
+              style={styles.poster}
+              targetWidth={cardWidth}
+              targetHeight={cardHeight}
+              resizeMode={"cover"}
+            />
             {(isFocused && responsiveConfig.deviceType === 'tv') && (
               <View style={dynamicStyles.overlay}>
                 {isContinueWatching && (

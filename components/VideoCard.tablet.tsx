@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, forwardRef } from "react";
-import { View, Text, Image, StyleSheet, TouchableOpacity, Alert, Animated } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, Alert, Animated } from "react-native";
 import { useRouter } from "expo-router";
 import { Star, Play } from "lucide-react-native";
 import { PlayRecordManager } from "@/services/storage";
@@ -8,6 +8,7 @@ import { ThemedText } from "@/components/ThemedText";
 import { Colors } from "@/constants/Colors";
 import { useResponsiveLayout } from "@/hooks/useResponsiveLayout";
 import { DeviceUtils } from "@/utils/DeviceUtils";
+import { OptimizedImage } from "@/utils/ImageLoader";
 import Logger from '@/utils/Logger';
 
 const logger = Logger.withTag('VideoCardTablet');
@@ -27,6 +28,9 @@ interface VideoCardTabletProps extends React.ComponentProps<typeof TouchableOpac
   onFocus?: () => void;
   onRecordDeleted?: () => void;
   api: API;
+  lazyLoad?: boolean;
+  imageWidth?: number;
+  imageHeight?: number;
 }
 
 const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
@@ -45,6 +49,9 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
       onRecordDeleted,
       api,
       playTime = 0,
+      lazyLoad = false,
+      imageWidth,
+      imageHeight,
     }: VideoCardTabletProps,
     ref
   ) => {
@@ -150,7 +157,14 @@ const VideoCardTablet = forwardRef<View, VideoCardTabletProps>(
           delayLongPress={900}
         >
           <View style={[styles.card, isPressed && styles.cardPressed]}>
-            <Image source={{ uri: api.getImageProxyUrl(poster) }} style={styles.poster} />
+            <OptimizedImage
+            source={{ uri: api.getImageProxyUrl(poster, imageWidth || cardWidth, imageHeight || cardHeight) }}
+            style={styles.poster}
+            targetWidth={imageWidth || cardWidth}
+            targetHeight={imageHeight || cardHeight}
+            resizeMode={'cover'}
+            lazyLoad={lazyLoad}
+          />
             
             {/* 悬停效果遮罩 */}
             {isPressed && (
