@@ -7,12 +7,21 @@ import Logger from "@/utils/Logger";
 
 const logger = Logger.withTag('DetailStore');
 
-export type SearchResultWithResolution = SearchResult & { resolution?: string | null };
+export type SearchResultWithResolution = SearchResult & { 
+  resolution?: string | null;
+  networkSpeed?: number; // 网络速度（毫秒）
+  lastSpeedTest?: number; // 最后测速时间戳
+};
 
 interface DetailState {
   q: string | null;
   searchResults: SearchResultWithResolution[];
-  sources: { source: string; source_name: string; resolution: string | null | undefined }[];
+  sources: { 
+    source: string; 
+    source_name: string; 
+    resolution: string | null | undefined;
+    networkSpeed?: number;
+  }[];
   detail: SearchResultWithResolution | null;
   loading: boolean;
   error: string | null;
@@ -27,6 +36,7 @@ interface DetailState {
   toggleFavorite: () => Promise<void>;
   markSourceAsFailed: (source: string, reason: string) => void;
   getNextAvailableSource: (currentSource: string, episodeIndex: number) => SearchResultWithResolution | null;
+  measureNetworkSpeed: (source: SearchResultWithResolution) => Promise<number>;
 }
 
 const useDetailStore = create<DetailState>((set, get) => ({
@@ -355,8 +365,55 @@ const useDetailStore = create<DetailState>((set, get) => ({
     set({ failedSources: newFailedSources });
   },
 
+  // 测量网络速度
+  measureNetworkSpeed: async (source: SearchResultWithResolution) => {
+    if (!source.episodes || source.episodes.length === 0) {
+      return Infinity; // 无法测量
+    }
+    
+    const url = source.episodes[0];
+    const now = Date.now();
+    
+    // 检查是否有缓存的测速结果，且在10分钟内
+    if (source.networkSpeed && source.lastSpeedTest && (now - source.lastSpeedTest < 10 * 60 * 1000)) {
+      return source.networkSpeed;
+    }
+    
+    try {
+      const startTime = performance.now();
+      // 发送HEAD请求来测量连接速度
+      const response = await fetch(url, {
+        method: 'HEAD',
+        signal: AbortSignal.timeout(3000), // 3秒超时
+      });
+      const endTime = performance.now();
+      
+      const latency = endTime - startTime;
+      
+      // 更新source的网络速度信息
+      set((state) => ({
+        searchResults: state.searchResults.map(item => 
+          item.source === source.source 
+            ? { ...item, networkSpeed: latency, lastSpeedTest: now }
+            : item
+        ),
+        sources: state.sources.map(item => 
+          item.source === source.source
+            ? { ...item, networkSpeed: latency }
+            : item
+        )
+      }));
+      
+      return latency;
+    } catch (error) {
+      logger.warn(`[SPEED_TEST] Failed to measure speed for ${source.source_name}:`, error);
+      return Infinity; // 测量失败，设为最大值
+    }
+  },
+  
+  // 基于网络速度和视频质量的综合排序
   getNextAvailableSource: (currentSource: string, episodeIndex: number) => {
-    const { searchResults, failedSources } = get();
+    const { searchResults, failedSources, measureNetworkSpeed } = get();
     
     logger.info(`[SOURCE_SELECTION] Looking for alternative to "${currentSource}" for episode ${episodeIndex + 1}`);
     logger.info(`[SOURCE_SELECTION] Failed sources: [${Array.from(failedSources).join(', ')}]`);
@@ -371,7 +428,7 @@ const useDetailStore = create<DetailState>((set, get) => ({
     
     logger.info(`[SOURCE_SELECTION] Available sources: ${availableSources.length}`);
     availableSources.forEach(source => {
-      logger.info(`[SOURCE_SELECTION] - ${source.source} (${source.source_name}): ${source.episodes?.length || 0} episodes`);
+      logger.info(`[SOURCE_SELECTION] - ${source.source} (${source.source_name}): ${source.episodes?.length || 0} episodes, resolution: ${source.resolution || 'unknown'}, speed: ${source.networkSpeed ? `${source.networkSpeed.toFixed(2)}ms` : 'not measured'}`);
     });
     
     if (availableSources.length === 0) {
@@ -379,12 +436,20 @@ const useDetailStore = create<DetailState>((set, get) => ({
       return null;
     }
     
-    // 优先选择有高分辨率的source
+    // 为所有未测量速度的source异步测量速度（不阻塞主流程）
+    availableSources
+      .filter(source => !source.networkSpeed || !source.lastSpeedTest || (Date.now() - source.lastSpeedTest > 10 * 60 * 1000))
+      .forEach(source => measureNetworkSpeed(source).catch(err => 
+        logger.error(`[SPEED_TEST] Background speed test failed:`, err)
+      ));
+    
+    // 优先选择有高分辨率且网络速度快的source
     const sortedSources = availableSources.sort((a, b) => {
+      // 1. 解析分辨率
       const aResolution = a.resolution || '';
       const bResolution = b.resolution || '';
       
-      // 优先级: 1080p > 720p > 其他 > 无分辨率
+      // 分辨率优先级: 1080p > 720p > 480p > 360p > 其他 > 无分辨率
       const resolutionPriority = (res: string) => {
         if (res.includes('1080')) return 4;
         if (res.includes('720')) return 3;
@@ -393,11 +458,42 @@ const useDetailStore = create<DetailState>((set, get) => ({
         return 0;
       };
       
-      return resolutionPriority(bResolution) - resolutionPriority(aResolution);
+      // 2. 网络速度评分（值越小越好）
+      // 未测量的速度给予默认中等评分
+      const speedScore = (speed?: number) => {
+        if (typeof speed !== 'number') return 3; // 未测量
+        if (speed < 300) return 0;     // 非常快
+        if (speed < 600) return 1;     // 快速
+        if (speed < 1000) return 2;    // 中等
+        if (speed < 2000) return 3;    // 较慢
+        return 4;                      // 很慢
+      };
+      
+      const aSpeedScore = speedScore(a.networkSpeed);
+      const bSpeedScore = speedScore(b.networkSpeed);
+      
+      // 3. 综合评分计算
+      // 分辨率权重占60%，网络速度权重占40%
+      const aResolutionValue = resolutionPriority(aResolution) * 0.6;
+      const bResolutionValue = resolutionPriority(bResolution) * 0.6;
+      
+      // 网络速度评分是反向的（值越小越好），所以用1-评分值
+      const aSpeedValue = (4 - aSpeedScore) * 0.4;
+      const bSpeedValue = (4 - bSpeedScore) * 0.4;
+      
+      // 计算综合得分
+      const aTotalScore = aResolutionValue + aSpeedValue;
+      const bTotalScore = bResolutionValue + bSpeedValue;
+      
+      logger.debug(`[SOURCE_SELECTION] Scoring: ${a.source_name} (${a.resolution}) - resolution: ${aResolutionValue}, speed: ${aSpeedValue}, total: ${aTotalScore}`);
+      logger.debug(`[SOURCE_SELECTION] Scoring: ${b.source_name} (${b.resolution}) - resolution: ${bResolutionValue}, speed: ${bSpeedValue}, total: ${bTotalScore}`);
+      
+      // 返回排序结果（降序，高分优先）
+      return bTotalScore - aTotalScore;
     });
     
     const selectedSource = sortedSources[0];
-    logger.info(`[SOURCE_SELECTION] Selected fallback source: ${selectedSource.source} (${selectedSource.source_name}) with resolution: ${selectedSource.resolution || 'unknown'}`);
+    logger.info(`[SOURCE_SELECTION] Selected fallback source: ${selectedSource.source} (${selectedSource.source_name}) with resolution: ${selectedSource.resolution || 'unknown'}, speed: ${selectedSource.networkSpeed ? `${selectedSource.networkSpeed.toFixed(2)}ms` : 'not measured'}`);
     
     return selectedSource;
   },
