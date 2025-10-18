@@ -58,6 +58,9 @@ interface PlayerState {
   // Internal helper
   _savePlayRecord: (updates?: Partial<PlayRecord>, options?: { immediate?: boolean }) => void;
   handleVideoError: (errorType: 'ssl' | 'network' | 'other', failedUrl: string) => Promise<void>;
+  // 新增字段：用于检测加载慢的状态
+  _bufferingStartTime?: number;
+  _bufferingTimeout?: NodeJS.Timeout;
 }
 
 const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -80,6 +83,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   outroStartTime: undefined,
   _seekTimeout: undefined,
   _isRecordSaveThrottled: false,
+  _bufferingStartTime: undefined,
+  _bufferingTimeout: undefined,
 
   setVideoRef: (ref) => set({ videoRef: ref }),
 
@@ -384,16 +389,70 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   handlePlaybackStatusUpdate: (newStatus) => {
+      const { _bufferingStartTime, _bufferingTimeout, currentEpisodeIndex, episodes, outroStartTime, playEpisode } = get();
+      const detail = useDetailStore.getState().detail;
+      
+      // 处理加载慢的情况：检测缓冲状态
+      if (newStatus.isLoaded) {
+        // 检测是否需要缓冲（isLoaded为true但isPlaying为false且positionMillis有值）
+        const isBuffering = newStatus.isLoaded && !newStatus.isPlaying && newStatus.positionMillis > 0;
+        
+        if (isBuffering) {
+          // 如果是刚开始缓冲，记录开始时间
+          if (!_bufferingStartTime) {
+            logger.info(`[BUFFERING] Started at position: ${newStatus.positionMillis}ms`);
+            set({ _bufferingStartTime: Date.now() });
+            
+            // 设置超时，如果3秒还在缓冲，则认为加载慢并切换源
+            const timeoutId = setTimeout(() => {
+              const currentState = get();
+              if (currentState.status?.isLoaded && !currentState.status?.isPlaying && currentState.status?.positionMillis > 0 && detail) {
+                logger.warn(`[BUFFERING_TIMEOUT] Video buffering for too long (>3s), trying to switch source`);
+                const currentEpisode = currentState.episodes[currentEpisodeIndex];
+                if (currentEpisode) {
+                  // 使用网络错误类型来触发源切换
+                  currentState.handleVideoError('network', currentEpisode.url);
+                }
+              }
+            }, 3000);
+            
+            set({ _bufferingTimeout: timeoutId });
+          }
+        } else {
+          // 如果停止缓冲，清除记录的开始时间和超时
+          if (_bufferingStartTime) {
+            const bufferingDuration = Date.now() - _bufferingStartTime;
+            logger.info(`[BUFFERING] Stopped after ${bufferingDuration}ms`);
+            set({ _bufferingStartTime: undefined });
+          }
+          
+          if (_bufferingTimeout) {
+            clearTimeout(_bufferingTimeout);
+            set({ _bufferingTimeout: undefined });
+          }
+        }
+      }
+    
     if (!newStatus.isLoaded) {
+      // 清除缓冲状态
+      if (_bufferingTimeout) {
+        clearTimeout(_bufferingTimeout);
+        set({ _bufferingTimeout: undefined });
+      }
+      set({ _bufferingStartTime: undefined });
+      
       if (newStatus.error) {
         logger.debug(`Playback Error: ${newStatus.error}`);
+        // 如果有错误且有当前剧集，尝试切换源
+        const currentEpisode = get().episodes[get().currentEpisodeIndex];
+        if (currentEpisode && detail) {
+          logger.warn(`[PLAYBACK_ERROR] Direct error detected, trying to switch source`);
+          get().handleVideoError('other', currentEpisode.url);
+        }
       }
       set({ status: newStatus });
       return;
     }
-
-    const { currentEpisodeIndex, episodes, outroStartTime, playEpisode } = get();
-    const detail = useDetailStore.getState().detail;
 
     if (
       outroStartTime &&
@@ -452,6 +511,14 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   reset: () => {
+    // 清除所有超时定时器
+    if (get()._seekTimeout) {
+      clearTimeout(get()._seekTimeout);
+    }
+    if (get()._bufferingTimeout) {
+      clearTimeout(get()._bufferingTimeout);
+    }
+    
     set({
       episodes: [],
       currentEpisodeIndex: 0,
@@ -466,6 +533,9 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       playbackRate: 1.0,
       introEndTime: undefined,
       outroStartTime: undefined,
+      _seekTimeout: undefined,
+      _bufferingTimeout: undefined,
+      _bufferingStartTime: undefined,
     });
   },
 
