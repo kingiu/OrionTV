@@ -156,21 +156,30 @@ export default function SearchScreen() {
     };
   };
 
-  // 取消当前搜索请求 - 增强版
+  // 取消当前搜索请求 - 增强版，优化错误处理和状态一致性
   const cancelSearch = useCallback(() => {
     if (searchAbortController && !isCancelling) {
       logger.debug("Cancelling current search request");
       setIsCancelling(true);
+      
       try {
         searchAbortController.abort();
       } catch (err) {
         logger.error("Error aborting search:", err);
+      } finally {
+        // 在finally块中重置所有状态，确保即使发生错误也能恢复一致状态
+        try {
+          setSearchAbortController(null);
+          setLoading(false);
+          setLoadingMore(false);
+          setError("搜索已取消");
+          setIsCancelling(false);
+        } catch (stateErr) {
+          logger.error("Error updating state in cancelSearch:", stateErr);
+          // 最后的安全保障，确保isCancelling被重置
+          setTimeout(() => setIsCancelling(false), 0);
+        }
       }
-      setSearchAbortController(null);
-      setLoading(false);
-      setLoadingMore(false);
-      setError("搜索已取消");
-      setIsCancelling(false);
     }
   }, [searchAbortController, isCancelling]);
   
@@ -231,54 +240,39 @@ export default function SearchScreen() {
     
     setError(null);
     
+    // 声明变量在外部try-catch作用域中，确保在catch块中也能访问
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let progressInterval: ReturnType<typeof setInterval> | null = null;
+    
     try {
-      // 分离API调用和结果处理，允许设置不同的超时策略
-      // 为冷门影片搜索设置更灵活的超时处理
-      let timeoutId: ReturnType<typeof setTimeout> | null = null;
-      
-      // 添加搜索进度更新
-      const updateSearchProgress = () => {
-        const elapsed = Date.now() - searchStartTime;
-        // 如果搜索时间超过3秒且仍在加载中，显示进度提示
-        if (elapsed > 3000 && loading && isNewSearch) {
-          // 可以在这里添加进度提示更新
-          logger.info(`Search in progress for ${elapsed}ms`);
+        // 分离API调用和结果处理，允许设置不同的超时策略
+        // 为冷门影片搜索设置更灵活的超时处理
+        progressInterval = setInterval(() => {
+          const elapsed = Date.now() - searchStartTime;
+          // 如果搜索时间超过3秒且仍在加载中，显示进度提示
+          if (elapsed > 3000 && loading && isNewSearch) {
+            // 可以在这里添加进度提示更新
+            logger.info(`Search in progress for ${elapsed}ms`);
+          }
+        }, 1000);
+        
+        // 为API调用设置超时处理
+        const searchPromise = api.searchVideos(
+          normalizedTerm, 
+          abortController.signal, 
+          10000, // 稍微增加超时时间到10秒，但添加更好的用户反馈
+          pageNum, 
+          pageSize
+        );
+        
+        // 简化超时处理，避免嵌套Promise可能导致的问题
+        let response = await searchPromise;
+        
+        // 清除定时器
+        if (timeoutId) clearTimeout(timeoutId);
+        if (progressInterval !== null) {
+          clearInterval(progressInterval);
         }
-      };
-      
-      // 设置定期检查进度
-      const progressInterval = setInterval(updateSearchProgress, 1000);
-      
-      // 为API调用设置超时处理
-      const searchPromise = api.searchVideos(
-        normalizedTerm, 
-        abortController.signal, 
-        10000, // 稍微增加超时时间到10秒，但添加更好的用户反馈
-        pageNum, 
-        pageSize
-      );
-      
-      // 添加搜索进度监控
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => {
-          reject(new Error('搜索请求超时，正在尝试获取部分结果...'));
-        }, 7000); // 先于最终超时显示友好提示
-      });
-      
-      // 直接使用try-catch处理搜索请求，避免Promise.race可能导致的问题
-      let response;
-      try {
-        response = await Promise.race([searchPromise, timeoutPromise]);
-      } catch (timeoutError) {
-        // 超时后仍然尝试等待原始搜索请求完成，但不再显示错误
-        logger.info("Search timeout warning, continuing with original request");
-        // 不抛出错误，继续等待原始请求
-        response = await searchPromise;
-      }
-      
-      // 清除定时器
-      if (timeoutId) clearTimeout(timeoutId);
-      clearInterval(progressInterval);
       
       // 确保response存在且有results属性
       if (response && response.results) {
@@ -308,9 +302,19 @@ export default function SearchScreen() {
         setError("没有找到相关内容");
       }
     } catch (err) {
-      // 清除定时器
-      if (timeoutId) clearTimeout(timeoutId);
-      clearInterval(progressInterval);
+      // 确保无论如何都会清除定时器，防止内存泄漏
+      try {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+        if (progressInterval !== null) {
+          clearInterval(progressInterval);
+          progressInterval = null;
+        }
+      } catch (timerErr) {
+        logger.error("Error clearing timers:", timerErr);
+      }
       
       // 不处理人为取消的错误
       if (err instanceof Error && err.name === 'AbortError') {
@@ -322,7 +326,7 @@ export default function SearchScreen() {
       
       if (err instanceof Error) {
         if (err.message.includes('超时')) {
-          errorMessage = "搜索请求超时，点击重试或取消搜索";
+          errorMessage = "搜索请求超时，点击重试";
         } else if (err.message.includes('API基础URL未设置')) {
           errorMessage = "API服务器地址未配置，请先在设置页面配置服务器地址";
         } else {
@@ -330,14 +334,28 @@ export default function SearchScreen() {
         }
       }
       
-      setError(errorMessage);
+      // 使用setTimeout确保状态更新在正确的React批处理周期中
+      setTimeout(() => {
+        setError(errorMessage);
+      }, 0);
+      
       logger.info("Search failed:", err);
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
-      setIsNewSearch(false);
-      setSearchAbortController(null);
-      setIsCancelling(false);
+      // 确保所有状态在finally块中被重置，避免内存泄漏和状态不一致
+      try {
+        // 再次确保定时器被清除
+        if (timeoutId) clearTimeout(timeoutId);
+        if (progressInterval !== null) clearInterval(progressInterval);
+        
+        // 重置所有相关状态
+        setLoading(false);
+        setLoadingMore(false);
+        setIsNewSearch(false);
+        setSearchAbortController(null);
+        setIsCancelling(false);
+      } catch (finallyErr) {
+        logger.error("Error in finally block:", finallyErr);
+      }
     }
   };
   
@@ -464,9 +482,9 @@ export default function SearchScreen() {
       api={api}
       // 优化懒加载策略，根据设备类型调整阈值
       lazyLoad={index > (deviceType === 'mobile' ? 3 : deviceType === 'tablet' ? 5 : 8)}
-      imageWidth={deviceType === 'tv' ? 200 : deviceType === 'tablet' ? 160 : 120}
-      // 增加性能优化参数
-      optimizeRender={true}
+      // 增加图片宽度，提高视频卡片清晰度
+      imageWidth={deviceType === 'tv' ? 240 : deviceType === 'tablet' ? 200 : 160}
+      // 移除不存在的属性
     />
   );
 
@@ -521,13 +539,7 @@ export default function SearchScreen() {
       {loading && isNewSearch ? (
         <View style={[commonStyles.center, { flex: 1 }]}>
           <VideoLoadingAnimation showProgressBar={true} />
-          <TouchableOpacity 
-            style={[dynamicStyles.cancelButton, { marginTop: spacing }]}
-            onPress={cancelSearch}
-          >
-            <ThemedText style={{ color: Colors.dark.primary }}>取消搜索</ThemedText>
-          </TouchableOpacity>
-          <ThemedText style={{ marginTop: spacing / 2, color: Colors.dark.textSecondary }}>
+          <ThemedText style={{ marginTop: spacing / 2, color: Colors.dark.text }}>
             搜索可能需要一些时间，请稍候...
           </ThemedText>
         </View>
@@ -563,8 +575,13 @@ export default function SearchScreen() {
             results.length === 0 && !loading ? commonStyles.center : null,
             { flexGrow: 1, paddingBottom: spacing }
           ]}
-          numColumns={deviceType === 'mobile' ? 3 : deviceType === 'tablet' ? 4 : 6}
-          columnWrapperStyle={deviceType !== 'mobile' ? { justifyContent: 'space-between' } : null}
+          // 根据设备类型设置不同的列数
+          numColumns={deviceType === 'mobile' ? 3 : 5}
+          // 优化列包装样式，确保均匀分布和足够间距
+          columnWrapperStyle={{
+            justifyContent: 'space-around',
+            paddingHorizontal: spacing / 2
+          }}
           showsVerticalScrollIndicator={false}
           onEndReached={loadMore}
           onEndReachedThreshold={0.2} // 降低阈值，提前加载更多
@@ -575,18 +592,17 @@ export default function SearchScreen() {
             ) : null
           }
           // 优化FlatList性能参数
-          maxToRenderPerBatch={8} // 增加渲染批次数量
-          windowSize={5} // 增加窗口大小
-          removeClippedSubviews={true}
-          initialNumToRender={12} // 增加初始渲染数量
+          // 优化FlatList性能参数
           maxToRenderPerBatch={8}
           windowSize={5}
+          removeClippedSubviews={true}
+          initialNumToRender={12}
           updateCellsBatchingPeriod={100} // 优化更新批次周期
           // 添加getItemLayout提升滚动性能
           getItemLayout={(data, index) => ({
-            length: deviceType === 'mobile' ? 180 : deviceType === 'tablet' ? 220 : 260,
-            offset: (deviceType === 'mobile' ? 180 : deviceType === 'tablet' ? 220 : 260) * 
-                   Math.floor(index / (deviceType === 'mobile' ? 3 : deviceType === 'tablet' ? 4 : 6)),
+            length: deviceType === 'mobile' ? 180 : 220,
+            offset: (deviceType === 'mobile' ? 180 : 220) * 
+                   Math.floor(index / (deviceType === 'mobile' ? 3 : 5)),
             index
           })}
           // 添加性能优化属性

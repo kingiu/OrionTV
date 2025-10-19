@@ -61,6 +61,8 @@ interface PlayerState {
   // 新增字段：用于检测加载慢的状态
   _bufferingStartTime?: number;
   _bufferingTimeout?: NodeJS.Timeout;
+  // 新增字段：用于缓冲重试计数
+  _bufferingRetryCount: number;
 }
 
 const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -85,6 +87,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   _isRecordSaveThrottled: false,
   _bufferingStartTime: undefined,
   _bufferingTimeout: undefined,
+  _bufferingRetryCount: 0,
 
   setVideoRef: (ref) => set({ videoRef: ref }),
 
@@ -389,32 +392,54 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   handlePlaybackStatusUpdate: (newStatus) => {
-      const { _bufferingStartTime, _bufferingTimeout, currentEpisodeIndex, episodes, outroStartTime, playEpisode } = get();
+      const { _bufferingStartTime, _bufferingTimeout, currentEpisodeIndex, episodes, outroStartTime, playEpisode, _bufferingRetryCount } = get();
       const detail = useDetailStore.getState().detail;
       
       // 处理加载慢的情况：检测缓冲状态
       if (newStatus.isLoaded) {
-        // 检测是否需要缓冲（isLoaded为true但isPlaying为false且positionMillis有值）
-        const isBuffering = newStatus.isLoaded && !newStatus.isPlaying && newStatus.positionMillis > 0;
+        // 检测是否需要缓冲（isLoaded为true但isPlaying为false且positionMillis有值且有durationMillis且isBuffering属性为true）
+        const isBuffering = newStatus.isLoaded && !newStatus.isPlaying && 
+                           newStatus.positionMillis > 0 && (newStatus.durationMillis || 0) > 0 && newStatus.isBuffering;
         
         if (isBuffering) {
           // 如果是刚开始缓冲，记录开始时间
           if (!_bufferingStartTime) {
             logger.info(`[BUFFERING] Started at position: ${newStatus.positionMillis}ms`);
-            set({ _bufferingStartTime: Date.now() });
+            set({ _bufferingStartTime: Date.now(), _bufferingRetryCount: 0 });
             
-            // 设置超时，如果3秒还在缓冲，则认为加载慢并切换源
+            // 设置超时，如果10秒还在缓冲且有明显卡顿，则认为加载慢并切换源
+            // 增加缓冲超时阈值，减少不必要的源切换
             const timeoutId = setTimeout(() => {
               const currentState = get();
-              if (currentState.status?.isLoaded && !currentState.status?.isPlaying && currentState.status?.positionMillis > 0 && detail) {
-                logger.warn(`[BUFFERING_TIMEOUT] Video buffering for too long (>3s), trying to switch source`);
+              const currentStatus = currentState.status;
+              
+              // 更严格的判断条件：
+              // 1. 确保状态仍然是加载中的
+              // 2. 确保确实处于缓冲状态
+              // 3. 确保重试次数不超过限制
+              if (currentStatus?.isLoaded && !currentStatus?.isPlaying && 
+                  currentStatus?.positionMillis > 0 && currentStatus?.isBuffering && detail && 
+                  currentState._bufferingRetryCount < 2) {
+                
+                // 记录重试次数
+                set({ _bufferingRetryCount: currentState._bufferingRetryCount + 1 });
+                
+                logger.warn(`[BUFFERING_TIMEOUT] Video buffering for too long (>10s), attempt ${currentState._bufferingRetryCount + 1}/2`);
+                
+                // 先尝试重新缓冲，而不是立即切换源
                 const currentEpisode = currentState.episodes[currentEpisodeIndex];
-                if (currentEpisode) {
+                if (currentEpisode && currentState._bufferingRetryCount === 0) {
+                  logger.info(`[BUFFERING_RETRY] Retrying to buffer without switching source`);
+                  // 可以添加一些额外的重试逻辑，如尝试跳转到当前位置附近
+                } 
+                // 只有在第二次尝试仍然失败时才切换源
+                else if (currentEpisode && currentState._bufferingRetryCount >= 1) {
+                  logger.warn(`[BUFFERING_TIMEOUT] Multiple buffering attempts failed, switching source`);
                   // 使用网络错误类型来触发源切换
                   currentState.handleVideoError('network', currentEpisode.url);
                 }
               }
-            }, 3000);
+            }, 10000); // 增加到10秒
             
             set({ _bufferingTimeout: timeoutId });
           }
@@ -423,7 +448,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
           if (_bufferingStartTime) {
             const bufferingDuration = Date.now() - _bufferingStartTime;
             logger.info(`[BUFFERING] Stopped after ${bufferingDuration}ms`);
-            set({ _bufferingStartTime: undefined });
+            set({ _bufferingStartTime: undefined, _bufferingRetryCount: 0 });
           }
           
           if (_bufferingTimeout) {
@@ -482,7 +507,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     }
 
-    const progressPosition = newStatus.durationMillis ? newStatus.positionMillis / newStatus.durationMillis : 0;
+    const progressPosition = newStatus.durationMillis && newStatus.positionMillis !== undefined ? newStatus.positionMillis / newStatus.durationMillis : 0;
     set({ status: newStatus, progressPosition });
   },
 
@@ -536,6 +561,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       _seekTimeout: undefined,
       _bufferingTimeout: undefined,
       _bufferingStartTime: undefined,
+      _bufferingRetryCount: 0,
     });
   },
 
@@ -545,7 +571,10 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     
     const detailStoreState = useDetailStore.getState();
     const { detail } = detailStoreState;
-    const { currentEpisodeIndex } = get();
+    const { currentEpisodeIndex, status } = get();
+    
+    // 保存当前播放位置
+    const currentPosition = status?.isLoaded && status?.positionMillis ? status.positionMillis : 0;
     
     if (!detail) {
       logger.error(`[VIDEO_ERROR] Cannot fallback - no detail available`);
@@ -588,6 +617,7 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
         
         set({
           episodes: mappedEpisodes,
+          initialPosition: currentPosition, // 恢复到切换前的播放位置
           isLoading: false, // 让Video组件重新渲染
         });
         

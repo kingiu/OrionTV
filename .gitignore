@@ -26,3 +26,5 @@ web/**
 .roomodes
 yarn-errors.log
 coverage/
+.env
+*.apk

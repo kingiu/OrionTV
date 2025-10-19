@@ -14,7 +14,7 @@ interface UserInfoSectionProps {
 // 默认用户信息，用于防止白屏
 const DEFAULT_USER_INFO: UserInfo = {
   username: "未知用户",
-  role: "guest",
+  role: "访客",
   groupName: "默认组",
   expiryTime: undefined,
   isExpired: false
@@ -46,6 +46,10 @@ export function UserInfoSection({ onFocus }: UserInfoSectionProps) {
   // 获取中文角色名 - 添加安全检查
   const getChineseRoleName = (role?: string): string => {
     if (!role) return "未知角色";
+    // 检查是否已经是中文角色名（如果包含中文字符，则直接返回）
+    if (/[\u4e00-\u9fa5]/.test(role)) {
+      return role;
+    }
     return roleMapping[role.toLowerCase()] || role;
   };
 
