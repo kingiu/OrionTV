@@ -21,6 +21,22 @@ const DEFAULT_USER_INFO: UserInfo = {
 };
 
 export function UserInfoSection({ onFocus }: UserInfoSectionProps) {
+  // 角色与用户组的一一对应关系映射
+  const roleToGroupMapping: Record<string, string> = {
+    'admin': '管理员组',
+    'vip': 'VIP用户组',
+    'premium': '高级会员组',
+    'user': '普通用户组',
+    'guest': '访客组',
+    'trial': '试用用户组'
+  };
+  
+  // 根据角色自动映射用户组
+  const mapRoleToGroup = (role?: string): string => {
+    if (!role) return "默认组";
+    return roleToGroupMapping[role.toLowerCase()] || "默认组";
+  };
+  
   const [userInfo, setUserInfo] = useState<UserInfo>(DEFAULT_USER_INFO);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +93,13 @@ export function UserInfoSection({ onFocus }: UserInfoSectionProps) {
       
       // 确保info是有效的UserInfo对象
       if (info && typeof info === 'object' && info.username) {
-        setUserInfo(info);
+        // 创建新的用户信息对象，根据角色自动映射用户组
+        const updatedInfo: UserInfo = {
+          ...info,
+          // 使用角色映射到对应的用户组，建立一一对应关系
+          groupName: mapRoleToGroup(info.role)
+        };
+        setUserInfo(updatedInfo);
       } else {
         throw new Error('无效的用户信息数据');
       }
@@ -172,7 +194,7 @@ export function UserInfoSection({ onFocus }: UserInfoSectionProps) {
               用户组：
             </ThemedText>
             <ThemedText style={[styles.infoValue, responsiveStyles.textLarge]}>
-              {userInfo?.groupName || "默认组"}
+              {userInfo?.groupName || mapRoleToGroup(userInfo?.role) || "默认组"}
             </ThemedText>
           </View>
           

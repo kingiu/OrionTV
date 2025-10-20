@@ -31,6 +31,8 @@ interface PlayerState {
   playbackRate: number;
   introEndTime?: number;
   outroStartTime?: number;
+  // 新增字段：用于标记是否是用户手动暂停
+  isUserPaused: boolean;
   setVideoRef: (ref: RefObject<Video>) => void;
   loadVideo: (options: {
     source: string;
@@ -63,6 +65,15 @@ interface PlayerState {
   _bufferingTimeout?: NodeJS.Timeout;
   // 新增字段：用于缓冲重试计数
   _bufferingRetryCount: number;
+  // 预加载相关字段
+  _preloadingEpisode?: string;
+  _preloadTestAbortController?: AbortController;
+  // 预加载方法
+  _preloadAndTestSource: (url: string) => Promise<boolean>;
+  // 新增字段：记录快进操作时间
+  _lastSeekTime?: number;
+  // 新增字段：缓存的视频源
+  _cachedSources: Map<string, { url: string, timestamp: number, responseTime: number }>;
 }
 
 const usePlayerStore = create<PlayerState>((set, get) => ({
@@ -83,13 +94,126 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   playbackRate: 1.0,
   introEndTime: undefined,
   outroStartTime: undefined,
+  isUserPaused: false,
   _seekTimeout: undefined,
   _isRecordSaveThrottled: false,
   _bufferingStartTime: undefined,
   _bufferingTimeout: undefined,
   _bufferingRetryCount: 0,
+  _preloadingEpisode: undefined,
+  _preloadTestAbortController: undefined,
+  _lastSeekTime: undefined,
+  _cachedSources: new Map(),
 
   setVideoRef: (ref) => set({ videoRef: ref }),
+
+  // 预加载并测试视频源的可用性和速度
+  _preloadAndTestSource: async (url: string): Promise<boolean> => {
+    const perfStart = performance.now();
+    logger.info(`[PRELOAD] Testing source: ${url.substring(0, 100)}...`);
+    
+    // 检查缓存
+    const currentState = get();
+    const cacheKey = url;
+    const cachedSource = currentState._cachedSources.get(cacheKey);
+    const now = Date.now();
+    
+    // 如果缓存存在且在5分钟内有效，直接使用缓存
+    if (cachedSource && (now - cachedSource.timestamp) < 5 * 60 * 1000) {
+      logger.info(`[PRELOAD] Using cached source info for ${url.substring(0, 50)}... (${cachedSource.responseTime}ms)`);
+      return cachedSource.responseTime < 3000;
+    }
+    
+    // 如果之前有预加载测试，取消它
+    if (currentState._preloadTestAbortController) {
+      currentState._preloadTestAbortController.abort();
+    }
+    
+    const controller = new AbortController();
+    const { signal } = controller;
+    set({ _preloadTestAbortController: controller });
+    
+    try {
+      // 只预加载前几秒的数据，测试连接速度和可用性
+      if (url.endsWith('.m3u8')) {
+        logger.info(`[PRELOAD] Source is m3u8 format, testing with limited GET request`);
+        
+        // 对于m3u8格式，发送GET请求但限制响应大小，测试连接性
+        const response = await Promise.race([
+          fetch(url, {
+            method: 'GET',
+            signal,
+            headers: {
+              'Range': 'bytes=0-1023' // 只获取前1KB数据
+            }
+          }),
+          new Promise<Response>((_, reject) => 
+            setTimeout(() => reject(new Error('Preload timeout')), 7000) // 增加超时时间
+          )
+        ]);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const perfEnd = performance.now();
+        const responseTime = perfEnd - perfStart;
+        logger.info(`[PRELOAD] m3u8 Source ${url.substring(0, 50)}... is available (${responseTime.toFixed(2)}ms)`);
+        
+        // 缓存结果
+        set(state => ({
+          _cachedSources: new Map(state._cachedSources).set(cacheKey, {
+            url,
+            timestamp: now,
+            responseTime
+          })
+        }));
+        
+        return responseTime < 4000; // 为m3u8增加一些容忍度
+      }
+      
+      // 对于非m3u8格式，优化预加载策略
+      const response = await Promise.race([
+        fetch(url, {
+          method: 'GET', // 使用GET而不是HEAD，可以预加载部分内容
+          signal,
+          headers: {
+            'Range': 'bytes=0-4095' // 预加载前4KB数据，有助于播放器快速开始播放
+          }
+        }),
+        new Promise<Response>((_, reject) => 
+          setTimeout(() => reject(new Error('Preload timeout')), 7000) // 增加超时时间
+        )
+      ]);
+      
+      if (!response.ok && response.status !== 206) {
+        // 206 Partial Content 也是可接受的
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const perfEnd = performance.now();
+      const responseTime = perfEnd - perfStart;
+      logger.info(`[PRELOAD] Source ${url.substring(0, 50)}... is available (${responseTime.toFixed(2)}ms)`);
+      
+      // 缓存结果
+      set(state => ({
+        _cachedSources: new Map(state._cachedSources).set(cacheKey, {
+          url,
+          timestamp: now,
+          responseTime
+        })
+      }));
+      
+      // 如果响应时间在可接受范围内，则认为源是良好的
+      return responseTime < 4000; // 增加容忍度，从3秒到4秒
+    } catch (error) {
+      logger.warn(`[PRELOAD] Failed to preload ${url.substring(0, 50)}...: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return false;
+    } finally {
+      // 清理
+      set({ _preloadTestAbortController: undefined });
+    }
+  },
 
   loadVideo: async ({ source, id, episodeIndex, position, title }) => {
     const perfStart = performance.now();
@@ -197,6 +321,67 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       return;
     }
     
+    // 尝试预加载和测试当前源的可用性
+    if (episodes.length > episodeIndex) {
+      const episodeUrl = episodes[episodeIndex];
+      logger.info(`[PERF] Preloading and testing source: ${episodeUrl.substring(0, 100)}...`);
+      
+      // 检查是否是当前正在预加载的集数，避免重复预加载
+      if (get()._preloadingEpisode !== episodeUrl) {
+        set({ _preloadingEpisode: episodeUrl });
+        
+        try {
+          const isSourceGood = await get()._preloadAndTestSource(episodeUrl);
+          
+          // 如果预加载失败，尝试切换到下一个可用源
+          if (!isSourceGood) {
+            logger.warn(`[PRELOAD] Current source preload failed, trying to find better source`);
+            
+            // 获取下一个可用的源
+            const fallbackSource = useDetailStore.getState().getNextAvailableSource(detail.source, episodeIndex);
+            
+            if (fallbackSource && fallbackSource.episodes && fallbackSource.episodes.length > episodeIndex) {
+              const fallbackUrl = fallbackSource.episodes[episodeIndex];
+              
+              // 测试备用源
+              const isFallbackGood = await get()._preloadAndTestSource(fallbackUrl);
+              
+              if (isFallbackGood) {
+                logger.info(`[PRELOAD] Fallback source ${fallbackSource.source_name} is better, switching to it`);
+                // 更新Detail为备用源
+                await useDetailStore.getState().setDetail(fallbackSource);
+                // 使用备用源的episodes
+                episodes = fallbackSource.episodes;
+                // 更新detail引用
+                detail = fallbackSource;
+                
+                // 标记原始源为失败
+                useDetailStore.getState().markSourceAsFailed(detail.source, 'preload_failed');
+              }
+            }
+          }
+          
+          // 无论如何，都为下一集预加载，提升用户体验
+          if (episodes.length > episodeIndex + 1) {
+            const nextEpisodeUrl = episodes[episodeIndex + 1];
+            logger.info(`[PERF] Preloading next episode: ${nextEpisodeUrl.substring(0, 100)}...`);
+            
+            // 异步预加载下一集，不阻塞当前流程
+            setTimeout(async () => {
+              // 确保用户仍在当前集数，才预加载下一集
+              if (get().currentEpisodeIndex === episodeIndex) {
+                await get()._preloadAndTestSource(nextEpisodeUrl);
+              }
+            }, 1000); // 延迟1秒开始预加载下一集，避免影响当前集数的加载
+          }
+        } catch (error) {
+          logger.error(`[PRELOAD] Error during preload test:`, error);
+        } finally {
+          set({ _preloadingEpisode: undefined });
+        }
+      }
+    }
+    
     logger.info(`[SUCCESS] Final validation passed - detail: ${detail.source_name}, episodes: ${episodes.length}`);
 
     try {
@@ -270,8 +455,12 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
       try {
         if (status.isPlaying) {
           await videoRef?.current?.pauseAsync();
+          // 标记为用户手动暂停
+          set({ isUserPaused: true });
         } else {
           await videoRef?.current?.playAsync();
+          // 取消用户手动暂停标记
+          set({ isUserPaused: false });
         }
       } catch (error) {
         logger.debug("Failed to toggle play/pause:", error);
@@ -287,6 +476,8 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
     const newPosition = Math.max(0, Math.min(status.positionMillis + duration, status.durationMillis));
     try {
       await videoRef?.current?.setPositionAsync(newPosition);
+      // 记录快进操作时间，用于后续缓冲检测
+      set({ _lastSeekTime: Date.now() });
     } catch (error) {
       logger.debug("Failed to seek video:", error);
       Toast.show({ type: "error", text1: "快进/快退失败" });
@@ -392,61 +583,104 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   handlePlaybackStatusUpdate: (newStatus) => {
-      const { _bufferingStartTime, _bufferingTimeout, currentEpisodeIndex, episodes, outroStartTime, playEpisode, _bufferingRetryCount } = get();
+      const { _bufferingStartTime, _bufferingTimeout, currentEpisodeIndex, episodes, outroStartTime, playEpisode, _bufferingRetryCount, isUserPaused, _lastSeekTime } = get();
       const detail = useDetailStore.getState().detail;
       
       // 处理加载慢的情况：检测缓冲状态
       if (newStatus.isLoaded) {
-        // 检测是否需要缓冲（isLoaded为true但isPlaying为false且positionMillis有值且有durationMillis且isBuffering属性为true）
-        const isBuffering = newStatus.isLoaded && !newStatus.isPlaying && 
-                           newStatus.positionMillis > 0 && (newStatus.durationMillis || 0) > 0 && newStatus.isBuffering;
+        // 如果视频从暂停状态变为播放状态，取消用户手动暂停标记
+        if (newStatus.isPlaying && isUserPaused) {
+          set({ isUserPaused: false });
+        }
+        
+        // 计算距离上次快进操作的时间
+        const now = Date.now();
+        const timeSinceLastSeek = _lastSeekTime ? now - _lastSeekTime : Infinity;
+        const isRecentlySeeked = timeSinceLastSeek < 10000; // 10秒内认为是最近快进
+        
+        // 检测是否需要缓冲
+        // 重要修改：
+        // 1. 排除用户手动暂停的情况
+        // 2. 排除最近快进操作后的缓冲
+        // 3. 更精确地检测缓冲状态
+        const isBuffering = newStatus.isLoaded && 
+                           !newStatus.isPlaying && 
+                           !isUserPaused &&
+                           !isRecentlySeeked && // 最近快进后不进行缓冲超时检测
+                           newStatus.positionMillis > 0 && 
+                           (newStatus.durationMillis || 0) > 0 && 
+                           newStatus.isBuffering;
         
         if (isBuffering) {
           // 如果是刚开始缓冲，记录开始时间
           if (!_bufferingStartTime) {
             logger.info(`[BUFFERING] Started at position: ${newStatus.positionMillis}ms`);
-            set({ _bufferingStartTime: Date.now(), _bufferingRetryCount: 0 });
+            set({ _bufferingStartTime: now, _bufferingRetryCount: 0 });
             
-            // 设置超时，如果10秒还在缓冲且有明显卡顿，则认为加载慢并切换源
+            // 设置超时，如果20秒还在缓冲且有明显卡顿，则认为加载慢并切换源
             // 增加缓冲超时阈值，减少不必要的源切换
             const timeoutId = setTimeout(() => {
               const currentState = get();
               const currentStatus = currentState.status;
+              const currentTimeSinceLastSeek = currentState._lastSeekTime ? now - currentState._lastSeekTime : Infinity;
+              const stillRecentlySeeked = currentTimeSinceLastSeek < 15000; // 检查是否仍然在快进后的窗口期
               
               // 更严格的判断条件：
               // 1. 确保状态仍然是加载中的
               // 2. 确保确实处于缓冲状态
               // 3. 确保重试次数不超过限制
-              if (currentStatus?.isLoaded && !currentStatus?.isPlaying && 
-                  currentStatus?.positionMillis > 0 && currentStatus?.isBuffering && detail && 
-                  currentState._bufferingRetryCount < 2) {
+              // 4. 确保不是用户手动暂停
+              // 5. 确保不在快进后的窗口期
+              if (currentStatus?.isLoaded && 
+                  !currentStatus?.isPlaying && 
+                  !currentState.isUserPaused &&
+                  !stillRecentlySeeked &&
+                  currentStatus?.positionMillis > 0 && 
+                  currentStatus?.isBuffering && 
+                  detail && 
+                  currentState._bufferingRetryCount < 3) { // 增加重试次数到3次
                 
                 // 记录重试次数
                 set({ _bufferingRetryCount: currentState._bufferingRetryCount + 1 });
                 
-                logger.warn(`[BUFFERING_TIMEOUT] Video buffering for too long (>10s), attempt ${currentState._bufferingRetryCount + 1}/2`);
+                logger.warn(`[BUFFERING_TIMEOUT] Video buffering for too long (>20s), attempt ${currentState._bufferingRetryCount + 1}/3`);
                 
-                // 先尝试重新缓冲，而不是立即切换源
+                // 获取当前剧集
                 const currentEpisode = currentState.episodes[currentEpisodeIndex];
-                if (currentEpisode && currentState._bufferingRetryCount === 0) {
-                  logger.info(`[BUFFERING_RETRY] Retrying to buffer without switching source`);
-                  // 可以添加一些额外的重试逻辑，如尝试跳转到当前位置附近
-                } 
-                // 只有在第二次尝试仍然失败时才切换源
-                else if (currentEpisode && currentState._bufferingRetryCount >= 1) {
-                  logger.warn(`[BUFFERING_TIMEOUT] Multiple buffering attempts failed, switching source`);
-                  // 使用网络错误类型来触发源切换
-                  currentState.handleVideoError('network', currentEpisode.url);
+                
+                if (currentEpisode) {
+                  // 根据重试次数决定操作
+                  if (currentState._bufferingRetryCount === 0) {
+                    logger.info(`[BUFFERING_RETRY] Retrying to buffer without switching source`);
+                    // 尝试通过小幅度回退并重新播放来解决缓冲问题
+                    if (currentStatus.positionMillis > 10000) { // 如果播放位置大于10秒
+                      const newPosition = Math.max(0, currentStatus.positionMillis - 5000); // 回退5秒
+                      currentState.videoRef?.current?.setPositionAsync(newPosition).catch(err => {
+                        logger.warn(`[BUFFERING_RETRY] Failed to adjust position: ${err}`);
+                      });
+                    }
+                  }
+                  // 第二次尝试增加缓冲重试
+                  else if (currentState._bufferingRetryCount === 1) {
+                    logger.info(`[BUFFERING_RETRY] Second attempt to buffer without switching source`);
+                    // 可以尝试降低播放质量或其他优化措施（如果播放器支持）
+                  }
+                  // 只有在第三次尝试仍然失败时才切换源
+                  else if (currentState._bufferingRetryCount >= 2) {
+                    logger.warn(`[BUFFERING_TIMEOUT] Multiple buffering attempts failed, switching source`);
+                    // 使用网络错误类型来触发源切换
+                    currentState.handleVideoError('network', currentEpisode.url);
+                  }
                 }
               }
-            }, 10000); // 增加到10秒
+            }, 20000); // 增加到20秒，减少不必要的切换
             
             set({ _bufferingTimeout: timeoutId });
           }
         } else {
           // 如果停止缓冲，清除记录的开始时间和超时
           if (_bufferingStartTime) {
-            const bufferingDuration = Date.now() - _bufferingStartTime;
+            const bufferingDuration = now - _bufferingStartTime;
             logger.info(`[BUFFERING] Stopped after ${bufferingDuration}ms`);
             set({ _bufferingStartTime: undefined, _bufferingRetryCount: 0 });
           }
@@ -536,34 +770,54 @@ const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   reset: () => {
-    // 清除所有超时定时器
-    if (get()._seekTimeout) {
-      clearTimeout(get()._seekTimeout);
-    }
-    if (get()._bufferingTimeout) {
-      clearTimeout(get()._bufferingTimeout);
-    }
-    
-    set({
-      episodes: [],
-      currentEpisodeIndex: 0,
-      status: null,
-      isLoading: true,
-      showControls: false,
-      showEpisodeModal: false,
-      showSourceModal: false,
-      showSpeedModal: false,
-      showNextEpisodeOverlay: false,
-      initialPosition: 0,
-      playbackRate: 1.0,
-      introEndTime: undefined,
-      outroStartTime: undefined,
-      _seekTimeout: undefined,
-      _bufferingTimeout: undefined,
-      _bufferingStartTime: undefined,
-      _bufferingRetryCount: 0,
-    });
-  },
+      // 清除所有超时定时器
+      const currentState = get();
+      if (currentState._seekTimeout) {
+        clearTimeout(currentState._seekTimeout);
+      }
+      if (currentState._bufferingTimeout) {
+        clearTimeout(currentState._bufferingTimeout);
+      }
+      if (currentState._preloadTestAbortController) {
+        currentState._preloadTestAbortController.abort();
+      }
+      
+      // 只保留缓存的源信息，其他状态重置
+      const cachedSources = new Map(currentState._cachedSources);
+      
+      // 清理过期的缓存项（超过30分钟的缓存）
+      const now = Date.now();
+      cachedSources.forEach((value, key) => {
+        if (now - value.timestamp > 30 * 60 * 1000) {
+          cachedSources.delete(key);
+        }
+      });
+      
+      set({
+        episodes: [],
+        currentEpisodeIndex: 0,
+        status: null,
+        isLoading: true,
+        showControls: false,
+        showEpisodeModal: false,
+        showSourceModal: false,
+        showSpeedModal: false,
+        showNextEpisodeOverlay: false,
+        initialPosition: 0,
+        playbackRate: 1.0,
+        introEndTime: undefined,
+        outroStartTime: undefined,
+        isUserPaused: false,
+        _seekTimeout: undefined,
+        _bufferingTimeout: undefined,
+        _bufferingStartTime: undefined,
+        _bufferingRetryCount: 0,
+        _preloadingEpisode: undefined,
+        _preloadTestAbortController: undefined,
+        _lastSeekTime: undefined,
+        _cachedSources: cachedSources,
+      });
+    },
 
   handleVideoError: async (errorType: 'ssl' | 'network' | 'other', failedUrl: string) => {
     const perfStart = performance.now();
